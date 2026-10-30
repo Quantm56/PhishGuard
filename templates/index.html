@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhishGuard - Phishing URL Analysis</title>
+<style>
+  :root{--bg:#f5f7fa;--card:#fff;--ink:#1a202c;--mut:#64748b;--line:#e2e8f0;--blue:#2b6cb0;--red:#c53030;--amber:#b7791f;--green:#2f855a}
+  @media(prefers-color-scheme:dark){:root{--bg:#10151c;--card:#18202a;--ink:#e6edf3;--mut:#93a1b3;--line:#2a3544;--blue:#63b3ed;--red:#fc8181;--amber:#f6ad55;--green:#68d391}}
+  *{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--card)}
+  header h1{margin:0;font-size:20px}header p{margin:2px 0 0;color:var(--mut);font-size:13px}
+  nav{display:flex;gap:4px;padding:0 24px;background:var(--card);border-bottom:1px solid var(--line)}
+  nav button{background:none;border:0;padding:12px 16px;font:inherit;color:var(--mut);cursor:pointer;border-bottom:2px solid transparent}
+  nav button.on{color:var(--ink);border-color:var(--blue);font-weight:600}
+  main{max-width:1000px;margin:0 auto;padding:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+  .card h2{margin:0 0 10px;font-size:15px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  input[type=text]{flex:1;min-width:240px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;background:var(--bg);color:var(--ink)}
+  .go{padding:10px 20px;background:var(--blue);color:#fff;border:0;border-radius:8px;font:inherit;font-weight:600;cursor:pointer}
+  .go:disabled{opacity:.5;cursor:wait}
+  label.t{font-size:13px;color:var(--mut);display:flex;gap:6px;align-items:center}
+  .verdict{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  .badge{font-size:22px;font-weight:700;padding:8px 18px;border-radius:8px;color:#fff}
+  .PHISHING{background:var(--red)}.SUSPICIOUS{background:var(--amber)}.LEGITIMATE{background:var(--green)}
+  .bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden;position:relative;flex:1;min-width:200px}
+  .bar>i{display:block;height:100%}
+  .tick{position:absolute;top:-2px;width:2px;height:16px;background:var(--ink);opacity:.5}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{color:var(--mut);font-weight:600}
+  .pill{font-size:12px;padding:1px 8px;border-radius:10px;border:1px solid var(--line)}
+  .listed{color:var(--red);border-color:var(--red)}.clean{color:var(--green);border-color:var(--green)}.skipped,.unavailable{color:var(--mut)}
+  .up{color:var(--red)}.down{color:var(--green)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .ebar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:13px}.ebar span.l{width:210px;flex:none}
+  .ebar div{height:10px;border-radius:3px}
+  .note{font-size:13px;color:var(--mut)}.warn{border-left:4px solid var(--amber);padding:8px 12px;background:var(--bg);font-size:13px;border-radius:4px}
+  code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .hide{display:none}.ex a{cursor:pointer;color:var(--blue);margin-right:12px;font-size:13px}
+  img{max-width:100%}
+</style>
+</head>
+<body>
+<header><h1>PhishGuard</h1><p>Multi-signal phishing URL analysis: host features &middot; page content &middot; WHOIS/DNS/TLS &middot; threat-intel feeds</p></header>
+<nav><button class="on" data-tab="scan">Scan a URL</button><button data-tab="perf">Model performance</button><button data-tab="about">How it works</button></nav>
+<main>
+<section id="scan">
+  <div class="card">
+    <div class="row"><input type="text" id="url" placeholder="https://example.com/login" autofocus>
+      <button class="go" id="go">Analyse</button></div>
+    <div class="row" style="margin-top:10px">
+      <label class="t"><input type="checkbox" id="live" checked> Live checks (fetch page, WHOIS, DNS, TLS, threat feeds)</label>
+    </div>
+    <div class="ex" style="margin-top:8px"><span class="note">Try:</span>
+      <a data-u="https://github.com/pallets/flask">github.com/pallets/flask</a>
+      <a data-u="http://secure-login-update-paypal.com">secure-login-update-paypal.com</a>
+      <a data-u="https://login-microsoftonline.com.account-verify.top/">login-microsoftonline.com.account-verify.top</a>
+      <a data-u="http://185.234.12.9/paypal/login.php">185.234.12.9/paypal/login.php</a></div>
+    <div class="warn" style="margin-top:10px">With live checks on, the server <b>fetches the page</b> (no JavaScript is run; private/internal addresses are blocked). Run this tool in a VM or container when scanning genuinely malicious URLs. Never open suspicious links in your own browser.</div>
+  </div>
+  <div id="out" class="hide"></div>
+</section>
+<section id="perf" class="hide"><div id="perfbody" class="note">Loading…</div></section>
+<section id="about" class="hide">
+  <div class="card"><h2>Pipeline</h2>
+  <ol>
+   <li><b>Host / domain features (31)</b> - length, subdomain depth, hyphens/digits, randomness (entropy), IP host, punycode, abused TLD, free-hosting platform, shorteners, and brand impersonation (look-alike spelling, digit/letter swaps, brand inside a subdomain or combined with extra words).</li>
+   <li><b>Page-content features (24)</b> - title, favicon, password / hidden / external-submit forms, iframes, script &amp; stylesheet counts, internal vs external links, copyright notice, bank/pay/crypto terms, redirects.</li>
+   <li><b>OSINT enrichment</b> - domain age via RDAP/WHOIS, DNS resolution, TLS certificate (validity, age, issuer), and lookups in OpenPhish, PhishTank, URLhaus, Google Safe Browsing and VirusTotal (the last three need free API keys).</li>
+   <li><b>Rule signals</b> - path/query indicators (<code>@</code> trick, embedded URLs, executable downloads, brand in path), HTTP password forms, brand-domain allow-list. These are <i>rules, not learned</i>, because the training data cannot teach them reliably (see the Performance tab).</li>
+   <li><b>Decision</b> - final score = model probability + rule adjustments; any threat-intel hit forces PHISHING. Thresholds: &ge;0.70 phishing, &ge;0.40 suspicious.</li>
+  </ol></div>
+</section>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  ['scan','perf','about'].forEach(t=>$('#'+t).classList.toggle('hide',t!==b.dataset.tab));
+  if(b.dataset.tab==='perf')loadPerf();});
+document.querySelectorAll('.ex a').forEach(a=>a.onclick=()=>{$('#url').value=a.dataset.u;run();});
+$('#go').onclick=run;$('#url').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+
+async function run(){
+  const url=$('#url').value.trim();if(!url)return;
+  const btn=$('#go');btn.disabled=true;btn.textContent='Analysing…';
+  try{
+    const r=await fetch('/api/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,live:$('#live').checked})});
+    const d=await r.json();
+    if(!r.ok){show(`<div class="card"><b>Error:</b> ${esc(d.error)}</div>`);return;}
+    render(d);
+  }catch(e){show(`<div class="card"><b>Request failed:</b> ${esc(e)}</div>`);}
+  finally{btn.disabled=false;btn.textContent='Analyse';}
+}
+function show(h){const o=$('#out');o.classList.remove('hide');o.innerHTML=h;}
+const colour=v=>v>=.7?'var(--red)':v>=.4?'var(--amber)':'var(--green)';
+
+function render(d){
+  let h=`<div class="card"><div class="verdict"><div class="badge ${d.verdict}">${d.verdict}</div>
+   <div style="flex:1;min-width:220px"><div class="row" style="justify-content:space-between"><b>Risk score ${(d.final_score*100).toFixed(1)}%</b>
+   <span class="note">model ${(d.ml_probability*100).toFixed(1)}% ${d.rule_adjustment>=0?'+':''}${(d.rule_adjustment*100).toFixed(0)} pts from rules</span></div>
+   <div class="bar" style="margin-top:6px"><i style="width:${d.final_score*100}%;background:${colour(d.final_score)}"></i>
+   <span class="tick" style="left:40%"></span><span class="tick" style="left:70%"></span></div></div></div>
+   <p style="margin:10px 0 0">${esc(d.reason)}</p>
+   <p class="note" style="margin:4px 0 0">Host <code>${esc(d.host)}</code> &middot; registered domain <code>${esc(d.registered_domain)}</code> &middot; model: ${esc(d.model_used)} (${esc(d.model_name)})</p></div>`;
+
+  h+=`<div class="grid"><div class="card"><h2>Why this score (model)</h2>`;
+  if(d.explanation.length){const mx=Math.max(...d.explanation.map(e=>Math.abs(e.effect)));
+    d.explanation.forEach(e=>{h+=`<div class="ebar"><span class="l">${esc(e.meaning)} <span class="note">(=${e.value})</span></span>
+      <div style="width:${Math.max(4,Math.abs(e.effect)/mx*120)}px;background:${e.effect>0?'var(--red)':'var(--green)'}"></div>
+      <span class="${e.effect>0?'up':'down'}">${e.effect>0?'+':''}${(e.effect*100).toFixed(1)}</span></div>`});
+    h+=`<p class="note">Change in model probability (percentage points) if that feature took a typical-legitimate value.</p>`;
+  }else h+=`<p class="note">No single feature moved the score noticeably.</p>`;
+  h+=`</div><div class="card"><h2>Rule-based signals</h2>`;
+  if(d.signals.length){h+='<table>';d.signals.forEach(s=>h+=`<tr><td class="${s.weight>0?'up':s.weight<0?'down':''}" style="white-space:nowrap">${s.weight>0?'+':''}${(s.weight*100).toFixed(0)}</td><td>${esc(s.detail)}</td></tr>`);h+='</table>';}
+  else h+='<p class="note">None triggered.</p>';
+  h+=`</div></div>`;
+
+  if(d.osint){const o=d.osint;
+    h+=`<div class="card"><h2>OSINT enrichment</h2><table>
+    <tr><th>Domain age</th><td>${o.whois.status==='ok'?`${o.whois.age_days} days (registered ${esc(o.whois.created)}${o.whois.registrar?', '+esc(o.whois.registrar):''}) <span class="note">via ${esc(o.whois.source)}</span>`:`<span class="note">${esc(o.whois.status)} ${esc(o.whois.detail||'')}</span>`}</td></tr>
+    <tr><th>DNS</th><td>${o.dns.status==='ok'?(o.dns.resolves?'resolves to '+esc(o.dns.ips.join(', ')):'does not resolve'):'<span class="note">unavailable</span>'}</td></tr>
+    <tr><th>TLS certificate</th><td>${o.tls.status==='ok'?`${o.tls.valid?'valid':'<span class="up">NOT valid: '+esc(o.tls.error||'')+'</span>'} &middot; issuer ${esc(o.tls.issuer||'?')} &middot; issued ${o.tls.age_days??'?'} days ago`:`<span class="note">${esc(o.tls.status)} ${esc(o.tls.detail||'')}</span>`}</td></tr>
+    ${o.threat_intel.map(t=>`<tr><th>${esc(t.source)}</th><td><span class="pill ${t.status}">${t.status}</span> <span class="note">${esc(t.detail)}</span></td></tr>`).join('')}
+    </table><p class="note">"unavailable" and "skipped" mean the source gave no answer - they are <b>not</b> evidence the URL is clean.</p></div>`;}
+  if(d.page){h+=`<div class="card"><h2>Page analysis</h2>`;
+    if(d.page.error)h+=`<p class="note">${esc(d.page.error)} - using the host-only model.</p>`;
+    else{h+=`<p class="note">Final URL <code>${esc(d.page.final_url)}</code> &middot; HTTP ${d.page.status} &middot; ${d.page.redirects} redirect(s)</p><table><tr>`;
+      const e=Object.entries(d.page.content_features);e.forEach(([k,v],i)=>{h+=`<td><b>${esc(k)}</b>: ${v}</td>`;if(i%3===2)h+='</tr><tr>';});h+='</tr></table>';}
+    h+='</div>';}
+  h+=`<div class="card"><h2>Host features extracted</h2><table><tr>`;
+  Object.entries(d.host_features).forEach(([k,v],i)=>{h+=`<td><b>${esc(k)}</b>: ${Math.round(v*1000)/1000}</td>`;if(i%3===2)h+='</tr><tr>';});
+  h+='</tr></table></div>';
+  show(h);
+}
+
+let perfLoaded=false;
+async function loadPerf(){
+  if(perfLoaded)return;
+  const r=await fetch('/api/metrics');const m=await r.json();
+  if(!r.ok){$('#perfbody').textContent=m.error;return;}
+  perfLoaded=true;
+  const pct=x=>(x*100).toFixed(2)+'%';
+  const ds=m.dataset;let h=`<div class="card"><h2>Dataset (PhiUSIIL)</h2><p>${ds.rows.toLocaleString()} unique URLs &middot; ${ds.phishing.toLocaleString()} phishing &middot; ${ds.legitimate.toLocaleString()} legitimate &middot; ${ds.unique_domains.toLocaleString()} distinct registered domains.
+   Split by <b>registered domain</b> (train ${ds.split.train.toLocaleString()} / val ${ds.split.val.toLocaleString()} / test ${ds.split.test.toLocaleString()}) so no website appears on both sides. +${(ds.augmented_legit_rows||0).toLocaleString()} augmented legitimate rows in training only.</p></div>`;
+  for(const k of ['host','full']){const f=m.feature_sets[k];
+    h+=`<div class="card"><h2>${esc(f.label)} - ${f.features.length} features</h2><table><tr><th>Model</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th><th>ROC-AUC</th><th>Train s</th></tr>`;
+    for(const [n,v] of Object.entries(f.models)){const t=v.test;h+=`<tr ${n===f.best?'style="font-weight:700"':''}><td>${esc(n)}${n===f.best?' ★':''}</td><td>${pct(t.accuracy)}</td><td>${pct(t.precision)}</td><td>${pct(t.recall)}</td><td>${pct(t.f1)}</td><td>${t.roc_auc.toFixed(4)}</td><td>${v.train_seconds}</td></tr>`;}
+    h+=`</table><p class="note">Held-out test set. ★ = selected on validation F1. Confusion matrix [[TN, FP],[FN, TP]]: ${JSON.stringify(f.confusion_matrix)}</p></div>`;}
+  const a=m.ablation.naive_url_string,hh=m.feature_sets.host;
+  h+=`<div class="card"><h2>Why the model does not use the URL path, www or https</h2>
+   <p>In PhiUSIIL <b>every</b> legitimate URL is a bare <code>https://www.&lt;domain&gt;</code> with no path, while 28% of phishing URLs have paths. A model on raw URL-string features therefore scores <b>${pct(a.models[a.best].test.accuracy)}</b> on the test split - but flags <b>${pct(a.false_positive_rate_on_real_legit_urls)}</b> of ${m.sanity_legit_urls.length} real-world legitimate URLs (e.g. github.com/user/repo) as phishing. It learned "has a path => phishing", not phishing.</p>
+   <p>The host-feature model, trained after removing that artifact, flags <b>${pct(hh.false_positive_rate_on_real_legit_urls)}</b> of the same legitimate URLs and catches <b>${pct(hh.recall_on_handwritten_phish_urls)}</b> of ${m.sanity_phish_urls.length} hand-written phishing-style URLs. Its dataset accuracy is lower because the shortcut is gone - that is the honest number.</p>
+   <p class="note">The sanity lists are small and hand-picked: they demonstrate the artifact, they are not a benchmark.</p></div>`;
+  h+=`<div class="card"><h2>Feature importance (full model, permutation)</h2>`;
+  const imp=m.feature_sets.full.importance.slice(0,12),mx=Math.max(...imp.map(i=>i.importance));
+  imp.forEach(i=>h+=`<div class="ebar"><span class="l">${esc(i.feature)}</span><div style="width:${Math.max(3,i.importance/mx*300)}px;background:var(--blue)"></div><span>${i.importance.toFixed(4)}</span></div>`);
+  h+=`<img src="/results/roc_importance.png" alt="ROC and importance"></div>`;
+  $('#perfbody').innerHTML=h;
+}
+</script>
+</body>
+</html>
