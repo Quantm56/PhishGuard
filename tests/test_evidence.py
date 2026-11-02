@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from phishguard import intel
+from phishguard import intel, content
 from phishguard.feature_display import describe_features
 from phishguard.predictor import PhishGuard
 from phishguard.urlfeatures import is_cosmetic_redirect
@@ -21,6 +21,9 @@ class EvidenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.guard = PhishGuard()
+        cls.renderer_patch = patch.object(content, 'render_with_playwright', return_value={"ok": False, "error": "Renderer not part of this unit test"})
+        cls.renderer_patch.start()
+        cls.addClassCleanup(cls.renderer_patch.stop)
 
     def test_offline_variants_have_identical_risk(self):
         for host in ('bookkr.co', 'maheslcm.manipal.edu'):

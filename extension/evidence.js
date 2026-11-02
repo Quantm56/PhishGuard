@@ -22,6 +22,22 @@ export function renderEvidence(container, data) {
     add(context, 'p', 'The submitted address could not connect. An HTTPS alternative was inspected; this was recovery, not an observed redirect.');
     for (const attempt of data.url_context.fetch_attempts || []) add(context, 'p', `${attempt.url}: ${attempt.status} ${attempt.reason || attempt.http_status || ''}`);
   }
+  if (data.url_context?.journey?.length) {
+    const path = section('URL inspection path');
+    path.open = true;
+    const list = document.createElement('ol');
+    path.appendChild(list);
+    for (const step of data.url_context.journey) add(list, 'li', `${step.detail}
+${step.from ? step.from + ' → ' : ''}${step.url}`);
+  }
+  if (data.osint?.threat_intel?.length) {
+    const feeds = section('Threat intelligence');
+    for (const provider of data.osint.threat_intel) {
+      add(feeds, 'h4', `${provider.source}: ${provider.status}`);
+      add(feeds, 'p', provider.detail);
+      for (const check of provider.checks || []) add(feeds, 'p', `${check.url}: ${check.status} — ${check.detail}`);
+    }
+  }
   const breakdown = data.score_breakdown;
   if (breakdown) {
     const maths = section('How the score adds up');
@@ -43,9 +59,12 @@ export function renderEvidence(container, data) {
   add(dom, 'p', `${page?.inspection_method || 'No inspection'}: ${page?.reason || page?.inspection_status || 'No page content captured.'}`);
   if (page) {
     add(dom, 'p', `Final URL: ${page.final_url || data.effective_url}
-HTTP redirects: ${page.redirects ?? 0}; counted for scoring: ${page.model_redirects ?? page.redirects ?? 0}`);
+HTTP redirects: ${page.redirects ?? 0}; non-cosmetic: ${page.model_redirects ?? page.redirects ?? 0}`);
     for (const hop of page.redirect_chain || []) add(dom, 'p', `${hop.from} → ${hop.to}`);
   }
+  if (page?.rendering_error) add(dom, 'p', `Browser rendering unavailable: ${page.rendering_error}. Static content is shown when available.`);
+  if (page?.render_readiness?.state === 'time_limit') add(dom, 'p', 'Rendering time limit reached; content may still be loading.');
+  if (page?.render_readiness?.assets_ready === false) add(dom, 'p', 'Some visual assets did not finish loading before capture.');
   if (page?.previews) {
     add(dom, 'p', page.previews.note);
     for (const [key, label] of [['static_html', 'Static HTML visual preview'], ['rendered_dom', 'Rendered DOM visual preview']]) {

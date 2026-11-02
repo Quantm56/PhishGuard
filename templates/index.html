@@ -41,6 +41,7 @@
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:760px){.grid{grid-template-columns:1fr}}
   .ebar{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px}.ebar span.l{width:220px;flex:none}
   .ebar div{height:10px;border-radius:3px}
+  .journey li{padding:6px 0;overflow-wrap:anywhere}.journey code{white-space:normal;overflow-wrap:anywhere}
   .note{font-size:13px;color:var(--mut)}
   .warn{border-left:4px solid var(--blue);padding:10px 14px;background:var(--bg);font-size:13px;border-radius:4px}
   code{background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -152,6 +153,9 @@ function render(d){
    <p class="note" style="margin:4px 0 0">Target: <code>${esc(d.host)}</code> &middot; Domain: <code>${esc(d.registered_domain)}</code> &middot; Inference Model: ${esc(d.model_used)}</p></div>`;
 
   h+=`<div class="card"><h2>URL &amp; Transport Context</h2><p>Submitted: <code>${esc(d.url)}</code><br>Inspected address: <code>${esc(d.effective_url||d.url)}</code></p><p class="note">${esc(d.url_context?.note||'')} Scores below 40% are lower risk; 40–69.9% require caution; 70% or above are high risk. A lower score is not a guarantee of safety.</p>${d.url_context?.transport==='http'?'<p class="bad">Unencrypted HTTP connection. Avoid entering passwords or payment details.</p>':''}</div>`;
+  if(d.url_context?.journey?.length){
+    h+=`<div class="card"><h2>URL inspection path</h2><ol class="journey">${d.url_context.journey.map(s=>`<li><b>${esc(s.detail)}</b><br>${s.from?`<code>${esc(s.from)}</code> → `:''}<code>${esc(s.url)}</code></li>`).join('')}</ol></div>`;
+  }
   if(d.url_context?.fallback_used){
     h+=`<div class="card"><h2>Address recovery</h2><p>The submitted address could not connect. Inspected <code>${esc(d.url_context.fetch_url)}</code> instead. This was a recovery attempt, not an observed redirect from the submitted address.</p><table><tr><th>Attempt</th><th>Outcome</th></tr>${(d.url_context.fetch_attempts||[]).map(a=>`<tr><td><code>${esc(a.url)}</code></td><td>${esc(a.status)} ${esc(a.reason||a.http_status||'')}</td></tr>`).join('')}</table></div>`;
   }
@@ -191,7 +195,7 @@ function render(d){
     <tr><th>Domain Age</th><td>${o.whois.status==='ok'?`<b>${o.whois.age_days} days</b> (Registered ${esc(o.whois.created)}${o.whois.registrar?', Registrar: '+esc(o.whois.registrar):''}) <span class="note">via ${esc(o.whois.source)}</span>`:`<span class="note">${esc(o.whois.status)} &middot; ${esc(o.whois.detail||'No RDAP record')}</span>`}</td></tr>
     <tr><th>DNS Resolution</th><td>${o.dns.status==='ok'?(o.dns.resolves?`<span class="clean">Resolves</span> (${esc(o.dns.ips.join(', '))})`:'<span class="up">Does not resolve</span>'):'<span class="note">Unavailable</span>'}</td></tr>
     <tr><th>TLS Certificate</th><td>${o.tls.status==='ok'?`${o.tls.valid?'<span class="clean">Valid Certificate</span>':'<span class="up">Verification Failed: '+esc(o.tls.error||'')+'</span>'} &middot; Issuer: ${esc(o.tls.issuer||'Unknown')} &middot; Issued: ${o.tls.age_days??'?'} days ago`:`<span class="note">${esc(o.tls.status)} &middot; ${esc(o.tls.detail||'')}</span>`}</td></tr>
-    ${o.threat_intel.map(t=>`<tr><th>${esc(t.source)}</th><td><span class="pill ${t.status}">${t.status.toUpperCase()}</span> <span class="note">${esc(t.detail)}</span></td></tr>`).join('')}
+    ${o.threat_intel.map(t=>`<tr class="threat-provider"><th>${esc(t.source)}</th><td><span class="pill ${t.status}">${t.status.toUpperCase()}</span> <span class="note">${esc(t.detail)}</span>${t.checks?.length?`<details><summary>${t.checks.length} checked address${t.checks.length===1?'':'es'}</summary><ul>${t.checks.map(c=>`<li><code>${esc(c.url)}</code>: <b>${esc(c.status)}</b> — ${esc(c.detail)}</li>`).join('')}</ul></details>`:''}</td></tr>`).join('')}
     </table>`;
     const t=o.tls;
     if(t.status==='ok'){
@@ -213,7 +217,7 @@ function render(d){
     if(p.inspection_status === 'unavailable' || p.reason || p.error){
       h+=`<p class="note">${esc(p.reason || p.error)} &mdash; The system automatically used the host-level detection model without penalising the URL.</p>`;
     } else {
-      h+=`<p class="note">Final URL: <code>${esc(p.final_url)}</code> &middot; Status: HTTP ${p.status} &middot; HTTP redirects: ${p.redirects} (counted for scoring: ${p.model_redirects??p.redirects}) &middot; Title: <b>${esc(p.title || '(none)')}</b></p><table><tr>`;
+      h+=`<p class="note">Final URL: <code>${esc(p.final_url)}</code> &middot; Status: HTTP ${p.status} &middot; HTTP redirects: ${p.redirects} (non-cosmetic: ${p.model_redirects??p.redirects}) &middot; Title: <b>${esc(p.title || '(none)')}</b></p><table><tr>`;
       const entries = Object.entries(p.content_features || {});
       entries.forEach(([k,v],i)=>{
         h+=featureValue(d,"content",k,v);
@@ -222,6 +226,9 @@ function render(d){
       h+='</tr></table>';
     }
     if(p.redirect_chain?.length)h+=`<details><summary>Observed HTTP redirect chain</summary><ol>${p.redirect_chain.map(r=>`<li><code>${esc(r.from)}</code> → <code>${esc(r.to)}</code></li>`).join('')}</ol><p class="note">Redirects that only add www, upgrade to HTTPS, or add a root slash are excluded from the model redirect count.</p></details>`;
+    if(p.rendering_error)h+=`<p class="note">Browser rendering unavailable: ${esc(p.rendering_error)}. Static content is shown when available.</p>`;
+    if(p.render_readiness?.state==='time_limit')h+='<p class="note">The page reached the rendering time limit. The capture may contain content still loading.</p>';
+    if(p.render_readiness?.assets_ready===false)h+='<p class="note">Some images or backgrounds did not finish loading before capture.</p>';
     if(p.previews){
       h+=`<p class="note">${esc(p.previews.note)}</p>`;
       for(const [key,label] of [['static_html','Static HTML — visual preview'],['rendered_dom','Rendered DOM — visual preview']]){

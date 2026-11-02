@@ -179,7 +179,7 @@ class TestContentFeatures(unittest.TestCase):
             self.assertEqual(res["inspection_method"], "playwright_rendered")
             mock_page.goto.assert_called_once_with("https://spa.example.com/", wait_until="domcontentloaded")
             self.assertEqual(mock_page.wait_for_timeout.call_args_list[0], mock.call(300))
-            self.assertLessEqual(mock_page.wait_for_timeout.call_count, 13)
+            self.assertLessEqual(mock_page.wait_for_timeout.call_count, 41)
             mock_page.wait_for_load_state.assert_not_called()
 
 
@@ -188,6 +188,9 @@ class TestLegitimateRegressionSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.g = PhishGuard()
+        cls.renderer_patch = mock.patch.object(content, 'render_with_playwright', return_value={"ok": False, "error": "Renderer not part of this unit test"})
+        cls.renderer_patch.start()
+        cls.addClassCleanup(cls.renderer_patch.stop)
 
     # Category 1: Modern JavaScript-heavy websites (SPAs)
     def test_modern_js_single_page_app(self):
@@ -293,6 +296,9 @@ class TestPhishingRegressionSuite(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.g = PhishGuard()
+        cls.renderer_patch = mock.patch.object(content, 'render_with_playwright', return_value={"ok": False, "error": "Renderer not part of this unit test"})
+        cls.renderer_patch.start()
+        cls.addClassCleanup(cls.renderer_patch.stop)
 
     # Category 1: Newly registered phishing domain
     def test_newly_registered_phishing_domain(self):

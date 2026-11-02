@@ -112,10 +112,15 @@ def safe_fetch(url: str, timeout: float = 6.0) -> dict:
             # Fetch unverified to inspect the payload, but keep record that TLS failed
             r = session.get(cur, timeout=timeout, allow_redirects=False, stream=True, verify=False)
 
+        except requests.RequestException as error:
+            error.redirect_chain = list(redirect_chain)
+            error.failed_url = cur
+            raise
+
         if r.is_redirect and r.headers.get("location") and hops < MAX_REDIRECTS:
             destination = urljoin(cur, r.headers["location"])
             substantive_hops += int(not is_cosmetic_redirect(cur, destination))
-            redirect_chain.append({"from": cur, "to": destination})
+            redirect_chain.append({"from": cur, "to": destination, "status": r.status_code})
             cur = destination
             hops += 1
             r.close()
@@ -193,7 +198,8 @@ def fetch_with_fallback(url: str, timeout: float = 6.0) -> dict:
     except requests.exceptions.SSLError:
         raise
     except (requests.Timeout, requests.ConnectionError) as error:
-        attempts.append({"url": url, "status": "failed", "reason": type(error).__name__})
+        attempts.append({"url": url, "status": "failed", "reason": type(error).__name__,
+                         "redirect_chain": getattr(error, "redirect_chain", []), "failed_url": getattr(error, "failed_url", url)})
         original_error = error
     for alternative in fallback_urls(url):
         try:
@@ -219,7 +225,9 @@ def fetch_with_fallback(url: str, timeout: float = 6.0) -> dict:
         except requests.exceptions.SSLError:
             raise
         except requests.RequestException as error:
-            attempts.append({"url": alternative, "status": "failed", "reason": type(error).__name__})
+            attempts.append({"url": alternative, "status": "failed", "reason": type(error).__name__,
+                             "redirect_chain": getattr(error, "redirect_chain", []), "failed_url": getattr(error, "failed_url", alternative)})
+    original_error.fetch_attempts = attempts
     raise original_error
 
 def page_usable(page: dict) -> tuple[bool, str]:
@@ -305,6 +313,30 @@ def render_with_playwright(url: str, timeout: float = 6.0, static_html: str | No
                     route.continue_()
 
             page = context.new_page()
+            browser_navigations = []
+            document_status = {"value": None}
+            last_navigation = {"url": url}
+            def observe_request(req):
+                try:
+                    if req.is_navigation_request() and req.frame == page.main_frame and req.redirected_from:
+                        previous_url = req.redirected_from.url
+                        browser_navigations.append({"kind": "browser_http_redirect", "from": previous_url, "to": req.url, "detail": "HTTP redirect observed during browser rendering"})
+                        last_navigation["url"] = req.url
+                except Exception:
+                    pass
+            def observe_frame(frame):
+                if frame == page.main_frame and frame.url not in ("about:blank", last_navigation["url"]):
+                    browser_navigations.append({"kind": "browser_navigation", "from": last_navigation["url"], "to": frame.url, "detail": "Browser / client-side navigation"})
+                    last_navigation["url"] = frame.url
+            def observe_response(response):
+                try:
+                    if response.request.is_navigation_request() and response.request.frame == page.main_frame:
+                        document_status["value"] = response.status
+                except Exception:
+                    pass
+            page.on("response", observe_response)
+            page.on("request", observe_request)
+            page.on("framenavigated", observe_frame)
             context.route("**/*", route_filter)
             page.set_default_navigation_timeout(int(timeout * 1000))
             page.set_default_timeout(int(timeout * 1000))
@@ -312,27 +344,34 @@ def render_with_playwright(url: str, timeout: float = 6.0, static_html: str | No
             try:
                 started = time.monotonic()
                 resp = page.goto(url, wait_until="domcontentloaded")
-                # Poll for usable, stable content instead of capturing a transient SPA
-                # loading shell. Never wait for networkidle (analytics can run forever).
+                # Ignore script nonces/timestamps; stabilise the visible UI instead.
+                # A hard deadline handles sites with perpetual analytics or spinners.
                 page.wait_for_timeout(300)
                 previous = None
                 stable_samples = 0
-                for _ in range(12):
+                settled = False
+                usable = False
+                for _ in range(40):
                     snapshot = page.content()
-                    current = (page.url, snapshot)
-                    usable, _reason = page_usable({"status": resp.status if resp else 200, "html": snapshot})
+                    visual_state = _visible_render_state(page)
+                    current = (page.url, visual_state.get("fingerprint", snapshot))
+                    usable, _reason = page_usable({"status": document_status["value"] or (resp.status if resp else 200), "html": snapshot})
                     stable_samples = stable_samples + 1 if current == previous else 0
-                    if usable and stable_samples >= 2:
+                    if (usable and not visual_state.get("busy", False) and stable_samples >= 3
+                            and time.monotonic() - started >= min(1.2, timeout / 2)):
+                        settled = True
                         break
                     if time.monotonic() - started >= timeout - 0.2:
                         break
                     previous = current
                     page.wait_for_timeout(200)
 
-                status = resp.status if resp else 200
+                assets_ready = _wait_for_preview_assets(page)
+                # Assets can trigger late app navigation; sample URL and DOM together.
                 final_url = page.url
-                _wait_for_preview_assets(page)
+                status = document_status["value"] or (resp.status if resp else 200)
                 rendered_html = page.content()
+                captured_navigations = list(browser_navigations)
                 try:
                     dom_preview = base64.b64encode(page.screenshot(type="jpeg", quality=75, timeout=2000)).decode("ascii")
                 except Exception:
@@ -346,6 +385,9 @@ def render_with_playwright(url: str, timeout: float = 6.0, static_html: str | No
                 "ok": True,
                 "html": rendered_html,
                 "rendered_preview": dom_preview,
+                "browser_navigations": captured_navigations,
+                "readiness": {"state": "settled" if settled else "time_limit", "content_usable": usable,
+                              "assets_ready": assets_ready, "waited_ms": round((time.monotonic() - started) * 1000)},
                 "static_preview": static_preview,
                 "final_url": final_url,
                 "status": status,
@@ -358,26 +400,44 @@ def render_with_playwright(url: str, timeout: float = 6.0, static_html: str | No
 
 
 
+
+def _visible_render_state(page) -> dict:
+    """A stable UI signature unaffected by analytics script text or random nonces."""
+    try:
+        result = page.evaluate(r"""() => {
+          const body = document.body;
+          const text = (body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 30000);
+          const controls = Array.from(document.querySelectorAll('input,button,select,textarea,a[href]')).map(e => [e.tagName,e.getAttribute('type'),e.getAttribute('href'),e.textContent?.trim().slice(0,80)]);
+          const busy = Array.from(document.querySelectorAll('[aria-busy="true"],[role="progressbar"],.spinner,.loading,.skeleton')).some(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && getComputedStyle(e).display !== 'none');
+          return {fingerprint: JSON.stringify([location.href,text,controls,document.images.length]),busy};
+        }""")
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
 def _wait_for_preview_assets(page):
     """Allow visible images and CSS backgrounds to decode; never wait indefinitely."""
     try:
-        page.evaluate(r"""async () => {
-          const jobs = Array.from(document.images).map(i => i.decode().catch(() => {}));
+        result = page.evaluate(r"""async () => {
+          const visible = el => {const r=el.getBoundingClientRect(); return r.width>0 && r.height>0 && r.bottom>0 && r.right>0 && r.top<innerHeight && r.left<innerWidth && getComputedStyle(el).visibility!=='hidden'};
+          const jobs = Array.from(document.images).filter(visible).map(i => i.decode().catch(() => {}));
+          if (document.fonts) jobs.push(document.fonts.ready);
           const urls = new Set();
-          for (const el of Array.from(document.querySelectorAll('*')).slice(0, 600)) {
+          for (const el of Array.from(document.querySelectorAll('*')).slice(0, 600).filter(visible)) {
             for (const match of getComputedStyle(el).backgroundImage.matchAll(/url\(["']?(.*?)["']?\)/g)) urls.add(match[1]);
           }
           for (const url of urls) {
             const img = new Image(); img.src = url;
             jobs.push(img.decode().catch(() => {}));
           }
-          await Promise.race([Promise.allSettled(jobs), new Promise(resolve => setTimeout(resolve, 2000))]);
+          return await Promise.race([Promise.allSettled(jobs).then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 4000))]);
         }""")
+        return result if isinstance(result, bool) else False
     except Exception:
-        pass
+        return False
 
 def _static_snapshot(browser, html: str, url: str) -> str | None:
-    """Render the fetched source with JavaScript off; only return a PNG snapshot."""
+    """Render the fetched source with JavaScript off; only return a JPEG snapshot."""
     context = None
     try:
         context = browser.new_context(java_script_enabled=False, service_workers="block", viewport={"width": 1280, "height": 800})

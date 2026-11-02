@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from . import content, intel
+from .journey import inspection_journey
 from .urlfeatures import HOST_FEATURES, host_features, is_free_hosting, normalize_url, parse, path_signals, registered_domain
 
 warnings.filterwarnings("ignore")
@@ -117,6 +118,7 @@ class PhishGuard:
 
         # ---- Live: Page content retrieval & OSINT in parallel
         page, page_err, osint = None, None, None
+        failed_attempts = []
         if live:
             with ThreadPoolExecutor(max_workers=2) as ex:
                 f_osint = ex.submit(intel.enrich, url)
@@ -126,8 +128,10 @@ class PhishGuard:
                     try:
                         page = f_page.result()
                     except content.UnsafeTarget as e:
+                        failed_attempts = getattr(e, "fetch_attempts", [])
                         page_err = f"blocked by SSRF guard: {e}"
                     except Exception as e:  # noqa: BLE001
+                        failed_attempts = getattr(e, "fetch_attempts", [])
                         page_err = f"page unreachable: {str(e)[:100]}"
 
         # ---- Content Inspection & Usability Assessment
@@ -139,12 +143,15 @@ class PhishGuard:
         # If static HTML was a JavaScript shell, attempt Playwright DOM rendering fallback
         static_html = page.get("html", "") if page else ""
         static_preview, rendered_preview = None, None
-        if page and not usable and "headless rendering needed" in unusable_reason:
+        rendering_error = None
+        if page and is_html and (usable or "headless rendering needed" in unusable_reason):
             try:
-                pw_res = content.render_with_playwright(page.get("final_url", url), timeout=5.0, static_html=static_html)
+                pw_res = content.render_with_playwright(page.get("final_url", url), timeout=10.0, static_html=static_html)
                 if pw_res.get("ok"):
                     static_preview = pw_res.get("static_preview")
                     rendered_preview = pw_res.get("rendered_preview")
+                    page["browser_navigations"] = pw_res.get("browser_navigations", [])
+                    page["render_readiness"] = pw_res.get("readiness", {})
                     page["html"] = pw_res["html"]
                     page["final_url"] = pw_res.get("final_url", url)
                     page["status"] = pw_res.get("status", 200)
@@ -154,9 +161,13 @@ class PhishGuard:
                     if not usable:
                         unusable_reason = "Rendered DOM unavailable for analysis: " + unusable_reason
                 else:
-                    unusable_reason = pw_res.get("error", unusable_reason)
+                    rendering_error = pw_res.get("error", "Rendering unavailable")
+                    if not usable:
+                        unusable_reason = rendering_error
             except Exception as e:
-                unusable_reason = f"Rendering fallback failed: {str(e)[:80]}"
+                rendering_error = f"Rendering failed: {str(e)[:80]}"
+                if not usable:
+                    unusable_reason = rendering_error
 
         # Use the observed destination for content context, never invent www/HTTPS aliases.
         effective_url = page.get("final_url", url) if page else url
@@ -167,23 +178,28 @@ class PhishGuard:
             "redirected": bool(page and not page.get("fallback_used") and page.get("n_redirects", 0)),
             "fallback_used": bool(page and page.get("fallback_used")),
             "fetch_url": page.get("fetch_url", url) if page else url,
-            "fetch_attempts": page.get("fetch_attempts", []) if page else [],
+            "fetch_attempts": page.get("fetch_attempts", []) if page else failed_attempts,
             "submitted_transport": sp.scheme,
             "transport": effective_sp.scheme,
             "note": "The host model ignores a leading www. If the submitted address cannot connect, HTTPS and apex/www alternatives may be inspected; recovery attempts are shown separately from redirects."
         }
+        result["url_context"]["journey"] = inspection_journey(url, page, page_err, failed_attempts)
+        threat_groups = [(url, (osint or {}).get("threat_intel", []))]
         # Refresh destination infrastructure after an observed origin change, retaining
         # threat hits on the submitted URL as well as on the destination.
         if live and (effective_sp.scheme, effective_sp.netloc) != (sp.scheme, sp.netloc):
             destination_osint = intel.enrich(effective_url)
             destination_osint = dict(destination_osint)
-            destination_osint["threat_intel"] = (osint or {}).get("threat_intel", []) + destination_osint.get("threat_intel", [])
+            threat_groups.append((effective_url, destination_osint.get("threat_intel", [])))
             # A malicious source redirecting to an established site must not inherit
             # that site's registration reputation or erase its own host features.
             if registered_domain(effective_host)[1:] != registered_domain(host)[1:]:
                 destination_osint["whois"] = (osint or {}).get("whois", {})
                 destination_osint["dns"] = (osint or {}).get("dns", {})
             osint = destination_osint
+        if osint is not None:
+            osint = dict(osint)
+            osint["threat_intel"] = intel.merge_threat_results(threat_groups)
         cf = None
         title = ""
         if is_html and usable:
@@ -224,6 +240,8 @@ class PhishGuard:
                 "format": "jpeg_base64", "interactive": False,
                 "note": "Visual snapshots: static HTML with JavaScript off; DOM after Playwright execution. Inputs and links are inactive."
             }
+            result["page"]["rendering_error"] = rendering_error
+            result["page"]["render_readiness"] = page.get("render_readiness", {})
             result["page"]["fetch_url"] = page.get("fetch_url", url)
             result["page"]["fallback_used"] = bool(page.get("fallback_used"))
             dom = page.get("html", "")
