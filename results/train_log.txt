@@ -1,36 +1,14 @@
-[1/5] Loading data + extracting host features
-  extracting host features for 235,370 URLs ...
-  done in 14s
-  rows=235,370  phishing=100,520  legitimate=134,850  unique domains=171,919
-[2/5] Domain-grouped split (70/15/15) - no registered domain appears in two splits
-  train=163,325 val=37,411 test=34,634
-[3/5] Training
+[1/5] Loading PhiUSIIL dataset and extracting features
+  Rows: 235,370 | Phishing: 100,520 | Legitimate: 134,850 | Unique Registered Domains: 171,919
+[2/5] Strict domain-grouped split (70/15/15) - unseen domains in val and test
+  Train: 163,325 | Val: 37,411 | Test: 34,634
+  Augmentation (Train only): +80,119 legitimate samples across SPAs, login portals, docs, and subdomains
 
-=== Feature set: NAIVE url-string (www/path/https) - ablation only  (10 features) ===
-  Logistic Regression          val F1 0.9972 | test acc 0.9981 F1 0.9976 AUC 0.9988  (0.3s)
-  Linear SVM (calibrated)      val F1 0.9971 | test acc 0.9980 F1 0.9976 AUC 0.9988  (0.9s)
-  Random Forest                val F1 0.9980 | test acc 0.9982 F1 0.9979 AUC 0.9986  (4.2s)
-  Gradient Boosting (HistGB)   val F1 0.9979 | test acc 0.9982 F1 0.9978 AUC 0.9985  (2.1s)
-  augmentation: +32,990 legitimate training rows with realistic subdomains
+[4/5] Generating evaluation plots
+  ROC and importance plots saved to results/roc_importance.png
 
-=== Feature set: Host / domain / lexical features  (30 features) ===
-  Logistic Regression          val F1 0.6992 | test acc 0.7465 F1 0.5720 AUC 0.7482  (1.8s)
-  Linear SVM (calibrated)      val F1 0.6859 | test acc 0.7397 F1 0.5504 AUC 0.7540  (8.6s)
-  Random Forest                val F1 0.7261 | test acc 0.7701 F1 0.6265 AUC 0.7973  (15.6s)
-  Gradient Boosting (HistGB)   val F1 0.7315 | test acc 0.7642 F1 0.6154 AUC 0.8021  (8.4s)
-  -> best for 'host': Gradient Boosting (HistGB)
-  permutation importance (test subset) ...
-
-=== Feature set: Host + page-content features  (54 features) ===
-  Logistic Regression          val F1 0.9933 | test acc 0.9947 F1 0.9936 AUC 0.9997  (1.2s)
-  Linear SVM (calibrated)      val F1 0.9947 | test acc 0.9951 F1 0.9940 AUC 0.9998  (5.6s)
-  Random Forest                val F1 0.9924 | test acc 0.9939 F1 0.9926 AUC 0.9999  (25.0s)
-  Gradient Boosting (HistGB)   val F1 0.9973 | test acc 0.9966 F1 0.9959 AUC 1.0000  (14.2s)
-  -> best for 'full': Gradient Boosting (HistGB)
-  permutation importance (test subset) ...
-[4/5] Plots
-[5/5] Summary (domain-grouped hold-out test set)
-  host  Gradient Boosting (HistGB)   acc=0.7642 prec=0.9388 rec=0.4578 f1=0.6154 auc=0.8021
-  full  Gradient Boosting (HistGB)   acc=0.9966 prec=0.9978 rec=0.9940 f1=0.9959 auc=1.0000
-  naive URL-string ablation: false-positive rate on 30 real legit URLs = 100%
-  host-feature model:        false-positive rate on same URLs = 3%; recall on 12 hand-written phishing URLs = 100%
+[5/5] Final Model Summary (Unseen Domains Hold-Out Test Set)
+  HOST  [HistGradientBoosting  ] Acc=0.7512 | Prec=0.9597 | Rec=0.4139 | F1=0.5783 | ROC-AUC=0.8064 | FPR=0.0122
+  FULL  [HistGradientBoosting  ] Acc=0.9806 | Prec=0.9968 | Rec=0.9560 | F1=0.9760 | ROC-AUC=0.9993 | FPR=0.0022
+  Host model FPR on 33 diverse real legitimate URLs = 0.0%
+  Host model Recall on 12 handwritten phishing URLs = 100.0%

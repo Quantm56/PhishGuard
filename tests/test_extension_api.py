@@ -153,6 +153,17 @@ class TestExtensionManifestAndFiles(unittest.TestCase):
         self.assertIn("CHECK_TIMEOUT_MS", content, "config.js must define pre-visit timeout")
         self.assertIn("RULES", content, "config.js must define DNR rule constants")
 
+    def test_config_timeout_headroom(self):
+        """Verify extension config timeout has sufficient headroom for live SPA analysis."""
+        import re
+        config_path = os.path.join(ROOT, "extension", "config.js")
+        with open(config_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        match = re.search(r"CHECK_TIMEOUT_MS:\s*(\d+)", content)
+        self.assertIsNotNone(match, "CHECK_TIMEOUT_MS must be defined in config.js")
+        timeout_ms = int(match.group(1))
+        self.assertGreaterEqual(timeout_ms, 8000, "CHECK_TIMEOUT_MS must be at least 8000ms for live SPA analysis")
+
 
 if __name__ == "__main__":
     unittest.main()
