@@ -7,12 +7,15 @@
 import json
 import os
 
+from dotenv import load_dotenv
+
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from phishguard.predictor import PhishGuard
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(ROOT, "results")
+load_dotenv(os.path.join(ROOT, ".env"), override=False)
 
 app = Flask(__name__)
 _guard = None
@@ -30,13 +33,28 @@ def index():
     return render_template("index.html")
 
 
-@app.get("/api/health")
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+
+@app.route("/api/health", methods=["GET", "OPTIONS"])
 def health():
-    return jsonify(status="ok")
+    if request.method == "OPTIONS":
+        return "", 204
+    return jsonify(status="ok", integrations={
+        name: bool(os.getenv(name)) for name in
+        ("GSB_API_KEY", "VT_API_KEY", "URLHAUS_AUTH_KEY", "PHISHTANK_APP_KEY")
+    })
 
 
-@app.post("/api/predict")
+@app.route("/api/predict", methods=["POST", "OPTIONS"])
 def predict():
+    if request.method == "OPTIONS":
+        return "", 204
     body = request.get_json(silent=True) or {}
     url = (body.get("url") or "").strip()
     if not url or len(url) > 4096:
@@ -57,7 +75,10 @@ def metrics():
     if not os.path.exists(path):
         return jsonify(error="Run train.py first"), 404
     with open(path) as f:
-        return jsonify(json.load(f))
+        data = json.load(f)
+    data["deployment"] = {"active_model": "host", "legacy_full_deployed": False,
+                          "content_policy": "Inspected security rules; legacy full-model benchmarks are archival"}
+    return jsonify(data)
 
 
 @app.get("/results/<path:name>")

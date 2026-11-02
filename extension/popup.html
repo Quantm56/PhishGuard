@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhishGuard URL Scanner</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <header class="header">
+      <div class="header-brand">
+        <img src="icons/icon32.png" alt="PhishGuard Shield" class="header-logo">
+        <div>
+          <h1 class="header-title">PhishGuard</h1>
+          <p class="header-subtitle">Multi-Signal Phishing Protection</p>
+        </div>
+      </div>
+      <span class="pill-warning" title="Advisory Warning Mode">Live Warning</span>
+    </header>
+
+    <div class="notice-banner">
+      <span class="notice-icon">&#9888;</span>
+      <span class="notice-text">Checks URLs before navigation and shows a warning when review is needed.</span>
+    </div>
+
+    <section class="section url-section">
+      <div class="section-label">Inspected URL</div>
+      <div id="targetUrl" class="url-text" title="Active URL">Loading...</div>
+    </section>
+
+    <!-- State: Unsupported URL -->
+    <section id="stateUnsupported" class="card state-card hide">
+      <div class="state-icon unsupported-icon">&#128683;</div>
+      <div class="state-title">This page cannot be scanned.</div>
+      <p class="state-desc">Internal browser pages, blank tabs, and non-web schemes (such as chrome:// or file://) cannot be evaluated.</p>
+    </section>
+
+    <!-- State: Checking / Scanning -->
+    <section id="stateChecking" class="card state-card hide">
+      <div class="spinner"></div>
+      <div class="state-title">Checking URL...</div>
+      <p class="state-desc">Analyzing host features, brand signals, and threat intelligence via local PhishGuard API.</p>
+    </section>
+
+    <!-- State: Error / API Stopped -->
+    <section id="stateError" class="card state-card hide">
+      <div class="state-icon error-icon">&#9888;</div>
+      <div class="state-title">Unable to scan.</div>
+      <p id="errorDetails" class="state-desc">Could not connect to the local PhishGuard API at http://127.0.0.1:5000. Ensure the server is running.</p>
+    </section>
+
+    <!-- State: Completed Result -->
+    <section id="stateResult" class="card state-card hide">
+      <div class="verdict-banner">
+        <div id="verdictBadge" class="verdict-badge">SAFE</div>
+        <div class="score-container">
+          <div class="score-row">
+            <span class="score-label">Risk Score</span>
+            <span id="scoreValue" class="score-value">0.0%</span>
+          </div>
+          <div class="score-bar-track">
+            <div id="scoreBarFill" class="score-bar-fill"></div>
+            <span class="threshold-marker t-suspicious" title="Suspicious threshold (40%)"></span>
+            <span class="threshold-marker t-phish" title="Phishing threshold (70%)"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="summary-box">
+        <div class="section-label">Summary Assessment</div>
+        <p id="summaryText" class="plain-text-reason">No strong phishing indicators found.</p>
+      </div>
+
+      <div id="reasonsSection" class="reasons-box">
+        <div class="section-label">Identified Signals &amp; Explanations</div>
+        <ul id="reasonsList" class="reasons-list">
+          <!-- Populated securely via document.createElement and textContent -->
+        </ul>
+      </div>
+
+      <div id="scanEvidence" class="scan-evidence"></div>
+      <div class="meta-row">
+        <span id="domainMeta" class="meta-item">Domain: -</span>
+        <span id="modelMeta" class="meta-item">Model: -</span>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <button id="rescanBtn" class="btn btn-primary" type="button">Scan again</button>
+      <div class="api-status">
+        <span class="status-dot"></span>
+        <span class="api-label">PhishGuard Local API (127.0.0.1:5000)</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
+

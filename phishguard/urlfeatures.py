@@ -239,7 +239,7 @@ def path_signals(url: str) -> list[dict]:
     if is_free_hosting(host):
         add("free_hosting", 0.12, "Hosted on a free/dev platform that phishing kits frequently abuse - judge by content and age")
     if sp.scheme == "http":
-        add("no_tls", 0.04, "URL uses plain HTTP (no TLS)")
+        add("no_tls", 0.0, "Plain HTTP: connection is not encrypted; this alone is not evidence of phishing")
     if "@" in (sp.netloc or ""):
         add("userinfo_in_url", 0.20, "'user@host' trick: text before '@' is ignored by the browser, real host is after it")
     if re.search(r"https?://", path_q, re.I) or "//" in (sp.path or "")[1:]:
@@ -264,3 +264,21 @@ def path_signals(url: str) -> list[dict]:
     if sp.scheme not in ("http", "https"):
         add("odd_scheme", 0.20, f"Unusual scheme '{sp.scheme}'")
     return out
+
+
+def is_cosmetic_redirect(source: str, destination: str) -> bool:
+    """An observed www alias, HTTPS upgrade or root slash changes no page identity."""
+    a, ah = parse(source)
+    b, bh = parse(destination)
+    strip_www = lambda h: h[4:] if h.startswith("www.") else h
+    if strip_www(ah) != strip_www(bh):
+        return False
+    if (a.scheme, b.scheme) not in (("http", "http"), ("https", "https"), ("http", "https")):
+        return False
+    try:
+        a_standard = a.port in (None, 80 if a.scheme == "http" else 443)
+        b_standard = b.port in (None, 80 if b.scheme == "http" else 443)
+        ports_match = (a_standard and b_standard) or (a.scheme == b.scheme and a.port == b.port)
+    except ValueError:
+        return False
+    return ports_match and (a.path or "/") == (b.path or "/") and a.query == b.query and a.username == b.username

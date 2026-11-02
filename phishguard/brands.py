@@ -1,9 +1,12 @@
 """Brand / keyword tables used for impersonation detection.
 
 brand label -> set of registered domains that legitimately belong to the brand.
-A URL whose *host* mentions the brand but whose registered domain is NOT in the set
-is a classic phishing pattern (combo-squatting, typosquatting, subdomain spoofing).
+A URL whose *host* or page *title* mentions the brand but whose registered domain is NOT in the set
+is a classic phishing pattern (combo-squatting, typosquatting, subdomain spoofing, title spoofing).
 """
+from __future__ import annotations
+
+import re
 
 BRANDS = {
     "paypal": {"paypal.com", "paypal.me"},
@@ -69,13 +72,20 @@ BRANDS = {
     "airtel": {"airtel.in", "airtel.com"},
     "swiggy": {"swiggy.com"},
     "zomato": {"zomato.com"},
-    "manipal": {"manipal.edu"},
 }
 
 # Short / dictionary-like brand labels: only used for exact-lookalike (typosquat) checks,
 # never for plain substring matches (would fire on "snapple", "visa-requirements", ...).
 AMBIGUOUS_BRANDS = {"apple", "amazon", "chase", "steam", "zoom", "kotak", "dhl", "adobe", "yahoo", "spotify",
                     "netflix", "github", "gitlab", "slack", "ebay", "visa", "meta"}
+
+# Well-known identity, SSO and payment service providers that third-party websites legitimately post to:
+LEGIT_EXTERNAL_DESTINATIONS = {
+    "google.com", "accounts.google.com", "microsoft.com", "login.microsoftonline.com",
+    "apple.com", "appleid.apple.com", "paypal.com", "stripe.com", "checkout.stripe.com",
+    "facebook.com", "github.com", "twitter.com", "amazon.com", "paytm.com", "razorpay.com",
+    "hcaptcha.com", "cloudflare.com", "recaptcha.net"
+}
 
 SUSPICIOUS_KEYWORDS = [
     "login", "signin", "sign-in", "logon", "verify", "verification", "secure", "security",
@@ -119,3 +129,20 @@ MULTI_PART_SUFFIXES = {
     "gov.za", "ac.za", "com.pl", "com.ru", "com.es", "com.pt", "co.cr", "com.ec", "com.gt", "com.do", "com.np",
     "com.lk",
 }
+
+
+def check_title_brand_mismatch(title: str, reg_domain: str) -> dict:
+    """Detect when a page title claims an explicit brand identity while the domain is unrelated."""
+    if not title or not reg_domain:
+        return {"mismatch": False, "brand": ""}
+    title_low = title.lower()
+    for brand, domains in BRANDS.items():
+        if reg_domain in domains:
+            continue
+        if brand in AMBIGUOUS_BRANDS:
+            continue
+        # Check if the title clearly claims the brand (e.g. "PayPal - Log In", "Sign In - Google Accounts")
+        pat = rf"\b{re.escape(brand)}\b"
+        if re.search(pat, title_low) and any(kw in title_low for kw in ("login", "sign in", "signin", "account", "verify", "security", "portal", "official")):
+            return {"mismatch": True, "brand": brand}
+    return {"mismatch": False, "brand": ""}
