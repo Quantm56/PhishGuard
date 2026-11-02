@@ -47,7 +47,7 @@ def health():
         return "", 204
     return jsonify(status="ok", integrations={
         name: bool(os.getenv(name)) for name in
-        ("GSB_API_KEY", "VT_API_KEY", "URLHAUS_AUTH_KEY", "PHISHTANK_APP_KEY")
+        ("PHISHTANK_APP_KEY",)
     })
 
 

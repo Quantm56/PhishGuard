@@ -16,9 +16,10 @@ The deployed system uses **30 host features plus explicit security rules for ins
 - [Detection pipeline](#detection-pipeline)
 - [Understanding results](#understanding-results)
 - [API reference](#api-reference)
-- [Configuration and API keys](#configuration-and-api-keys)
+- [Configuration](#configuration)
 - [Testing](#testing)
 - [Model training and evaluation](#model-training-and-evaluation)
+- [Team contribution](#team-contribution)
 - [Project structure](#project-structure)
 - [Security and limitations](#security-and-limitations)
 - [License and dataset credit](#license-and-dataset-credit)
@@ -32,7 +33,7 @@ The deployed system uses **30 host features plus explicit security rules for ins
 - **Address recovery:** HTTPS and applicable bare-domain/`www` alternatives after connection failure, with recovery attempts distinguished from actual redirects.
 - **Inspection path:** entered URL, failed attempts, recovery, HTTP redirect hops, browser/client navigation and final inspected address.
 - **Infrastructure details:** RDAP/optional WHOIS registration age, DNS addresses and TLS certificate identity, validity, hostnames, fingerprint and leaf PEM.
-- **Threat intelligence:** OpenPhish, PhishTank, URLhaus, Google Safe Browsing and VirusTotal, shown once per provider with per-address evidence.
+- **Threat intelligence:** OpenPhish and PhishTank, shown once per provider with per-address evidence.
 - **Readable explanations:** feature guidance, independent model what-if checks and a sequential score calculation.
 - **Pre-navigation Chrome checks:** a checking page, warning/error states, temporary navigation allowances and an evidence popup.
 
@@ -82,7 +83,7 @@ If Playwright reports missing Linux system libraries, use its dependency install
 python -m playwright install --with-deps chromium
 ```
 
-### 4. Configure optional integrations
+### 4. Optional server configuration
 
 Copy `.env.example` to `.env` if `.env` does not already exist:
 
@@ -96,7 +97,7 @@ cp .env.example .env
 Copy-Item .env.example .env
 ```
 
-Leave optional API-key fields empty to start without those integrations. The server loads the project's `.env` automatically; existing environment variables take precedence. See [API_KEYS.md](API_KEYS.md) for provider setup and verification.
+No API-key setup is required. The server loads the project's `.env` automatically; existing environment variables take precedence. PhishTank's application key is optional. See [CONFIGURATION.md](CONFIGURATION.md) for server settings and the included intelligence sources.
 
 ### 5. Start the server
 
@@ -207,7 +208,7 @@ Each provider appears once. Expand its checked addresses to see the submitted an
 | `listed` | The provider reported a threat match. |
 | `clean` | No match in that provider's checked data; not a general safety guarantee. |
 | `skipped` | The check was not enabled or applicable, such as a missing API key. |
-| `unavailable` | No usable answer, for example due to a timeout, quota or absent VirusTotal report. |
+| `unavailable` | No usable answer, for example due to a timeout, rate limit or provider error. |
 
 Unknown registration age has no risk penalty. A valid TLS certificate verifies connection/hostname properties, not the website's trustworthiness. The certificate viewer shows the leaf certificate, not a full certificate chain.
 
@@ -258,20 +259,17 @@ Malformed or missing URL input returns HTTP 400; an unexpected assessment failur
 | `GET /api/metrics` | Stored evaluation report and active deployment policy. Historical full-model results, if present, are archival. |
 | `GET /results/<name>` | Files from the results directory, including evaluation plots. |
 
-## Configuration and API keys
+## Configuration
 
 | Variable | Purpose |
 | --- | --- |
 | `HOST` | Server bind address; defaults to `127.0.0.1`. |
 | `PORT` | Server port; defaults to `5000`. |
-| `GSB_API_KEY` | Google Safe Browsing v4. |
-| `VT_API_KEY` | VirusTotal v3 report lookups. |
-| `URLHAUS_AUTH_KEY` | abuse.ch URLhaus authentication. |
 | `PHISHTANK_APP_KEY` | Optional PhishTank application key. |
 
 RDAP, DNS, TLS and the OpenPhish community feed need no API key. The PhishTank implementation can attempt a lookup without an application key. Provider availability, quotas and access policies still apply.
 
-Keep keys in the server's `.env`, which is ignored by Git, rather than in extension or dashboard JavaScript. Follow [API_KEYS.md](API_KEYS.md) for account setup, restrictions, provider limits and verification. Restart the server after editing keys.
+The project runs without required API keys. If you use an optional PhishTank application key, keep it in the server's `.env`, which is ignored by Git, rather than in extension or dashboard JavaScript. See [CONFIGURATION.md](CONFIGURATION.md) for settings and provider behaviour. Restart the server after editing configuration.
 
 ## Testing
 
@@ -281,7 +279,7 @@ Run the automated suite from the project root:
 python -m unittest discover -s tests -v
 ```
 
-The current suite contains **85 tests**, covering API contracts, URL recovery, private-address blocking, certificate parsing, retained threat hits, provider de-duplication, score arithmetic, layout-bias regressions, DOM rendering and inspection paths. Browser-rendering dependencies are mocked in relevant unit tests; running the suite alone does not validate third-party availability or complete browser behaviour.
+The current suite contains **86 tests**, covering API contracts, URL recovery, private-address blocking, certificate parsing, retained threat hits, provider de-duplication, score arithmetic, layout-bias regressions, DOM rendering and inspection paths. Browser-rendering dependencies are mocked in relevant unit tests; running the suite alone does not validate third-party availability or complete browser behaviour.
 
 Use [TEST_URLS.md](TEST_URLS.md) for ten manual test URLs and their expected checks. For a complete manual check:
 
@@ -328,6 +326,10 @@ These classification metrics use the training evaluation threshold of **0.5**. T
 
 The archive may include high-scoring full-model results. That classifier is retired because its dataset performance did not generalise reliably to real page layouts. Earlier training artifacts have not been presented as a fresh retraining of the current policy.
 
+## Team contribution
+
+See [WORK_DISTRIBUTION.md](WORK_DISTRIBUTION.md) for a three-person allocation centred on information security: phishing detection and risk analysis; secure page inspection and credential-theft analysis; and infrastructure trust, threat intelligence and browser enforcement. Each member owns implementation, security test evidence, documentation and a demonstration for their module.
+
 ## Project structure
 
 ```text
@@ -352,8 +354,9 @@ PhishGuard/
 ├── data/README.md            # Training dataset instructions
 ├── .github/workflows/ci.yml  # Automated test workflow
 ├── .env.example              # Server configuration template
-├── API_KEYS.md               # Integration setup and detailed behaviour
+├── CONFIGURATION.md          # Server settings and inspection behaviour
 ├── TEST_URLS.md              # Manual testing checklist
+├── WORK_DISTRIBUTION.md      # Balanced information-security responsibilities
 ├── requirements.txt          # Runtime dependencies
 ├── pyproject.toml            # Package metadata
 ├── CONTRIBUTING.md

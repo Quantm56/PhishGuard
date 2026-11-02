@@ -1,32 +1,37 @@
-# Enable the optional intelligence tools
+# PhishGuard configuration
 
-Keys belong on the Python server, never in the extension or website JavaScript.
+The project runs without required API keys. RDAP registration age, DNS, TLS and the OpenPhish community feed require no key. PhishTank lookups are attempted without an application key unless an optional key is configured. Network access and provider availability are still required for live checks.
 
-1. In the project directory, run `cp .env.example .env` (only if `.env` does not already exist).
-2. Fill in the values below in `.env`. Do not add quotes unless the value needs them.
-3. Install the updated dependencies with `.venv/bin/pip install -r requirements.txt`.
-4. Restart the server with `.venv/bin/python api.py`.
-5. Open <http://127.0.0.1:5000/api/health>. The `integrations` object reports whether each key is present, without exposing its value. Presence is not proof that the key works. Run a live scan and inspect each provider's result to verify authentication.
+## Local settings
 
-The server now loads this project's `.env` automatically. Existing environment variables take precedence. `.env` is ignored by Git. Restart after editing keys. Never paste keys into screenshots or commit them.
+Copy `.env.example` to `.env` only if you want to customise the defaults. The server automatically loads this file; existing environment variables take precedence. Restart the server after editing it.
 
-| Tool | Variable | Setup |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| Google Safe Browsing v4 | `GSB_API_KEY` | Create/select a project in [Google Cloud Console](https://console.cloud.google.com/), enable **Safe Browsing API** in APIs & Services → Library, then create an API key in Credentials. Restrict the key to Safe Browsing API. Because the Python server calls Google, do not configure browser referrer restrictions; use a server IP restriction if you have a stable outbound IP. [Official setup](https://developers.google.com/safe-browsing/v4/get-started). |
-| VirusTotal v3 | `VT_API_KEY` | Create/sign in to a VirusTotal Community account, open your profile's API key page, and copy your key into `.env`. [Official setup](https://docs.virustotal.com/reference/getting-started). |
-| URLhaus | `URLHAUS_AUTH_KEY` | Sign in at the [abuse.ch Authentication Portal](https://auth.abuse.ch/), generate an Auth-Key and paste it into `.env`. The backend sends it as an `Auth-Key` header for URL lookup. [Official lookup example](https://github.com/abusech/URLhaus/blob/master/lookup_url.py). |
-| PhishTank | `PHISHTANK_APP_KEY` | If an account/application key is available, create an application and copy the key. It is optional; account registration availability may vary. [Developer information](https://phishtank.org/developer_info.php). |
+| `HOST` | `127.0.0.1` | Local server bind address. |
+| `PORT` | `5000` | API and dashboard port. |
+| `PHISHTANK_APP_KEY` | Empty | Optional PhishTank application key; no setup is required to start. |
 
-RDAP registration age, DNS, TLS and the OpenPhish community feed need no key. A missing key is **skipped**; authentication failures, timeouts and quota limits are **unavailable**, not clean. VirusTotal URLs with no existing report are also unavailable, not clean. This app looks up existing VirusTotal reports; it does not submit new scan jobs.
+The `.env` file is ignored by Git. Never place an optional credential in website or extension JavaScript or commit it. If an application key is available, store it on the Python server. See [PhishTank developer information](https://phishtank.org/developer_info.php) for the provider's documentation.
 
-Google Safe Browsing is for non-commercial use ([terms overview](https://developers.google.com/safe-browsing)). VirusTotal's public API allows 4 requests/minute and 500/day, with non-commercial restrictions ([limits](https://docs.virustotal.com/reference/public-vs-premium-api)). Rapid extension navigation can exceed this quota; test slowly or use a suitable paid plan. URLhaus community access is subject to its [fair-use rules](https://urlhaus.abuse.ch/api/).
+## Included intelligence sources
+
+- **OpenPhish:** checks the community URL/host feed, cached locally for one hour. No API key is needed.
+- **PhishTank:** queries its URL-check service. An application key is optional in this implementation; provider access and rate limits can still prevent a lookup.
+- **RDAP / optional WHOIS:** registration age when a record is available.
+- **DNS:** resolution results and addresses.
+- **TLS:** certificate verification and certificate details for the inspected HTTPS address.
+
+Each threat provider appears once, with per-address results beneath it. A failed lookup is **unavailable**, not clean, and a clean result is not a guarantee of safety.
+
+Open [the health endpoint](http://127.0.0.1:5000/api/health) to check server status. Its `integrations` object reports only whether the optional PhishTank key is present, without revealing its value. A presence flag does not validate the credential. Run a live scan to check actual provider availability.
 
 # DOM and certificate display
 
 For dynamic rendering install the browser once: `.venv/bin/python -m playwright install chromium`.
-The renderer runs when static HTML is detected as a JavaScript shell. Challenge/error pages can remain unavailable. The website and extension show visual snapshots of static HTML (JavaScript disabled) and the Playwright-rendered DOM. A static snapshot of a JavaScript-only shell can be blank; its rendered DOM snapshot shows the hydrated page. The previews are non-interactive images. Source code remains available separately, limited to 100,000 characters. Target scripts never execute inside the dashboard or extension.
+The renderer runs for eligible HTML pages, including pages whose initial HTML already contains text. Challenge/error pages can remain unavailable. The website and extension show visual snapshots of static HTML (JavaScript disabled) and the Playwright-rendered DOM. A static snapshot of a JavaScript-only shell can be blank; its rendered DOM snapshot shows the hydrated page. The previews are non-interactive images. Source code remains available separately, limited to 100,000 characters. Target scripts never execute inside the dashboard or extension.
 
-Certificate details include verification result, subject, issuer, covered hostnames, validity dates, expiry countdown, serial number, SHA-256 fingerprint, TLS version, and leaf certificate PEM. Failed verification is shown even when the leaf certificate can be read. This is the leaf certificate, not a full certificate-chain viewer. HTTP pages have no TLS certificate unless an observed redirect ends at HTTPS.
+Certificate details include verification result, subject, issuer, covered hostnames, validity dates, expiry countdown, serial number, SHA-256 fingerprint, TLS version, and leaf certificate PEM. Failed verification is shown even when the leaf certificate can be read. This is the leaf certificate, not a full certificate-chain viewer. TLS is checked for the HTTPS address actually inspected, including a disclosed recovery address.
 
 After changing extension files, reload PhishGuard on `chrome://extensions` and reopen the popup. The popup displays the last completed scan's evidence, including for lower-risk pages. Warning pages also expose the evidence.
 
@@ -36,7 +41,7 @@ The host model already strips one leading `www.` and ignores the URL scheme. Pla
 
 `www` and bare hosts are not assumed to be interchangeable: different DNS, certificates, page content, access-denied responses, or threat-feed matches can legitimately produce different scores. The UI shows the submitted URL, observed destination, inspection method, model and evidence to make those differences inspectable. It never silently rewrites a URL to HTTPS or removes a subdomain before fetching. No retraining or universal false-positive fix is implied by these changes.
 
-Observed redirects that only add `www`, upgrade HTTP to HTTPS, or add a root slash are excluded from the model redirect-count feature. Actual redirect counts and chains remain in the API evidence. Other redirects still count. SPA rendering polls for usable, stable HTML for a bounded period instead of assuming 300 ms is enough.
+Actual redirect counts and chains remain in the API evidence. A separate non-cosmetic redirect count excludes changes that only add `www`, upgrade HTTP to HTTPS or add a root slash; the deployed host model does not learn from redirect counts. SPA rendering polls for usable, stable HTML for a bounded period instead of assuming 300 ms is enough.
 
 
 ## Scoring policy and numbers

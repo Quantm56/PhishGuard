@@ -8,10 +8,23 @@ from phishguard.predictor import PhishGuard
 
 
 class IntelAndJourneyTests(unittest.TestCase):
+    def test_live_enrichment_uses_two_sources_without_required_keys(self):
+        import os
+        self.assertEqual([feed.__name__ for feed in intel.THREAT_FEEDS], ['check_openphish', 'check_phishtank'])
+        response = MagicMock()
+        response.json.return_value = {'results': {'in_database': False}}
+        with patch.dict(os.environ, {'PHISHTANK_APP_KEY': ''}), patch.object(intel, 'domain_age', return_value={'status': 'not_found'}), patch.object(intel, 'dns_info', return_value={'status': 'ok', 'resolves': True}), patch.object(intel, 'tls_info', return_value={'status': 'ok', 'valid': True}), patch.object(intel, '_load_openphish', return_value=set()), patch.object(intel.requests, 'post', return_value=response) as post:
+            result = intel.enrich('https://example.com/')
+        self.assertEqual([row['source'] for row in result['threat_intel']], ['OpenPhish', 'PhishTank'])
+        self.assertTrue(all(row['status'] == 'clean' for row in result['threat_intel']))
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], 'https://checkurl.phishtank.com/checkurl/')
+        self.assertNotIn('app_key', post.call_args.kwargs['data'])
+
     def test_duplicate_providers_become_one_row_with_per_url_evidence(self):
-        rows = [{'source': 'OpenPhish', 'status': 'clean', 'detail': 'No match'}, {'source': 'VirusTotal', 'status': 'skipped', 'detail': 'No key'}]
+        rows = [{'source': 'OpenPhish', 'status': 'clean', 'detail': 'No match'}, {'source': 'PhishTank', 'status': 'unavailable', 'detail': 'Timeout'}]
         merged = intel.merge_threat_results([('http://example.com', rows), ('https://example.com/', rows)])
-        self.assertEqual([r['source'] for r in merged], ['OpenPhish', 'VirusTotal'])
+        self.assertEqual([r['source'] for r in merged], ['OpenPhish', 'PhishTank'])
         self.assertEqual(len(merged[0]['checks']), 2)
         self.assertEqual(merged[0]['status'], 'clean')
 
