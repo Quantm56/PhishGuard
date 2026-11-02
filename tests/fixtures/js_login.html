@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!--
+  PhishGuard dynamic-scan test fixture.
+
+  PURPOSE
+  -------
+  This page is used by tests/test_dynamic.py to verify that:
+    1. The STATIC fetcher (safe_fetch / extract_content_features) does NOT see
+       the password form, because the form is injected by JavaScript after page load.
+    2. The Playwright worker DOES see it in the rendered DOM.
+
+  The page is served locally during tests by a tiny http.server thread.
+  It is intentionally benign – the form action points to "#" (no data is sent).
+
+  Security note: this file is a test fixture only and must never be reachable
+  from the internet in production.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>JS-Injected Login Test Page</title>
+</head>
+<body>
+  <h1>Test Page</h1>
+  <p id="static-content">This text is in the static HTML.</p>
+  <!-- The form below does NOT exist in static HTML. It is inserted by JS. -->
+  <div id="form-container"></div>
+
+  <script>
+    // Simulate a JS-rendered login form (common phishing pattern: SPA renders form
+    // after page load so static scrapers don't see it)
+    (function() {
+      var container = document.getElementById('form-container');
+      var form = document.createElement('form');
+      form.id = 'js-login-form';
+      form.action = '#';
+      form.method = 'post';
+
+      var userInput = document.createElement('input');
+      userInput.type = 'text';
+      userInput.name = 'username';
+      userInput.placeholder = 'Username';
+
+      var pwInput = document.createElement('input');
+      pwInput.type = 'password';
+      pwInput.name = 'password';
+      pwInput.placeholder = 'Password';
+
+      var submit = document.createElement('input');
+      submit.type = 'submit';
+      submit.value = 'Sign In';
+
+      form.appendChild(userInput);
+      form.appendChild(pwInput);
+      form.appendChild(submit);
+      container.appendChild(form);
+    })();
+  </script>
+</body>
+</html>
+

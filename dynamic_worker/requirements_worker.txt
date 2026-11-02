@@ -1,0 +1,5 @@
+# Worker-only Python dependencies
+beautifulsoup4>=4.12
+playwright>=1.40.0
+
+

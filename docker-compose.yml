@@ -1,0 +1,63 @@
+# PhishGuard docker-compose.yml
+# Usage:
+#   docker compose build worker
+#   docker compose up app
+#
+# The 'worker' service is intentionally NOT a long-running daemon.
+# It is launched on-demand by phishguard/dynamic_scan.py for each scan.
+# This compose file exists to (a) define the build context and (b) let you
+# test the worker in isolation via:
+#   echo '{"url":"https://example.com"}' | docker compose run --rm worker
+#
+# The 'app' service runs the Flask API server.
+
+version: "3.9"
+
+services:
+  # ── Main Flask application ──────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    ports:
+      - "5000:5000"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "5000"
+      # Forward optional threat-intel keys from .env (never forwarded to worker)
+      GSB_API_KEY:      "${GSB_API_KEY:-}"
+      VT_API_KEY:       "${VT_API_KEY:-}"
+      URLHAUS_AUTH_KEY: "${URLHAUS_AUTH_KEY:-}"
+      PHISHTANK_APP_KEY:"${PHISHTANK_APP_KEY:-}"
+      # Worker image tag (must match what you built)
+      PHISHGUARD_WORKER_IMAGE: "phishguard-worker:latest"
+    volumes:
+      - ./results:/app/results   # persist scan results & artifacts on host
+    # The app container needs to reach the Docker socket so it can launch
+    # worker containers.  Mount the socket read-only.
+    volumes:
+      - ./results:/app/results
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Dynamic-scan worker (ephemeral, launched per-scan) ─────────────────────
+  worker:
+    build:
+      context: ./dynamic_worker
+      dockerfile: Dockerfile
+    image: phishguard-worker:latest   # tag used by dynamic_scan.py
+    # stdin_open + tty not needed; subprocess.run sends stdin via pipe
+    stdin_open: true
+    # Security settings
+    cap_add:
+      - NET_ADMIN          # allows entrypoint.sh to install iptables egress rules
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    # No host mounts
+    # No env_file forwarding – worker must NOT receive application secrets
+    network_mode: bridge   # internet access, but iptables blocks internal ranges
+    restart: "no"          # worker is always launched with --rm, never restarted
+

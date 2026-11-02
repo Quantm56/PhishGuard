@@ -338,8 +338,189 @@ When analyzing potentially hostile URLs in live mode, PhishGuard implements defe
 ## ⚠️ Limitations
 
 - **Heuristic Rule Weights**: Rule weights (e.g., `+0.20` for domains younger than 30 days) are expert-configured heuristics, as the underlying PhiUSIIL dataset does not contain WHOIS timestamps.
-- **Dynamic Content**: PhishGuard evaluates static HTML. Heavily obfuscated single-page applications (SPAs) that render entirely client-side via JavaScript are inspected through the host-level model and threat feeds.
+- **Dynamic Content**: PhishGuard evaluates static HTML. Heavily obfuscated single-page applications (SPAs) that render entirely client-side via JavaScript are inspected through the host-level model and threat feeds. The optional dynamic-scan worker (see below) addresses this limitation.
 - **Brand Allow-List Scope**: The default brand directory comprises ~60 commonly targeted institutions (PayPal, Microsoft, Google, etc.). Attackers leveraging compromised subdomains on trusted domains are checked via threat intelligence feeds.
+
+---
+
+## 🐳 Dynamic Webpage Analysis (Playwright + Docker)
+
+PhishGuard's static scanner cannot see page elements created by JavaScript. The optional **dynamic-scan worker** fixes this by opening the URL in headless Chromium (Playwright), inside a disposable Docker container, and returning the fully rendered DOM, a screenshot, the redirect chain, and cookie metadata.
+
+### Architecture
+
+```
+POST /api/dynamic_scan
+        │
+        ▼
+phishguard/dynamic_scan.py   (main-app bridge)
+        │  stdin JSON payload
+        ▼
+docker run --rm phishguard-worker  (ephemeral container)
+        │
+        ├── entrypoint.sh  →  iptables egress rules (hard network boundary)
+        └── worker.py      →  Playwright headless Chromium
+                │
+                ├── Screenshot (PNG)
+                ├── Rendered DOM (HTML after JS)
+                ├── Redirect chain
+                └── Cookie metadata (no values)
+        │
+        ▼  stdout JSON result
+phishguard/dynamic_scan.py
+        │
+        ├── Saves artifacts → results/dynamic/
+        └── Runs extract_content_features() on rendered DOM
+```
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Docker Desktop | ≥ 4.x | Must be running. Windows: use Linux containers mode. |
+| Python | 3.10–3.14 | Already required by PhishGuard |
+| Free disk space | ~2 GB | Playwright base image |
+
+### Build the Worker Image (PowerShell)
+
+```powershell
+# From the PhishGuard project root:
+cd "c:\...\PhishGuard"
+
+# Build the dynamic-scan worker image (~2 GB download on first run)
+docker build -t phishguard-worker:latest .\dynamic_worker\
+
+# Verify
+docker images phishguard-worker
+```
+
+### Run the Application (with dynamic scan support)
+
+```powershell
+# Option A – plain Python (recommended for development)
+.venv\Scripts\Activate.ps1
+python api.py
+# Flask starts at http://127.0.0.1:5000
+
+# Option B – docker compose (app + worker image in one command)
+docker compose build
+docker compose up app
+```
+
+### Trigger a Dynamic Scan
+
+**PowerShell / curl:**
+```powershell
+curl.exe -X POST http://127.0.0.1:5000/api/dynamic_scan `
+  -H "Content-Type: application/json" `
+  -d '{"url": "https://example.com", "timeout": 25}'
+```
+
+**Python requests:**
+```python
+import requests
+r = requests.post("http://127.0.0.1:5000/api/dynamic_scan",
+                  json={"url": "https://example.com", "timeout": 25})
+print(r.json())
+```
+
+### Example Response
+
+```json
+{
+  "status": "ok",
+  "error": null,
+  "final_url": "https://www.iana.org/domains/reserved",
+  "redirect_chain": ["https://example.com/", "https://www.iana.org/domains/reserved"],
+  "cookies": [
+    {"name": "session", "domain": "example.com", "httpOnly": true, "secure": true, "sameSite": "Strict"}
+  ],
+  "page_title": "IANA — Example Domains",
+  "navigation_errors": [],
+  "content_features": {
+    "HasTitle": 1.0, "HasPasswordField": 0.0, "HasSubmitButton": 0.0,
+    "NoOfJS": 3.0, "NoOfExternalRef": 5.0
+  },
+  "content_signals": [],
+  "artifacts": {
+    "screenshot_path": "results/dynamic/screenshot_a3f2b1….png",
+    "rendered_html_path": "results/dynamic/rendered_a3f2b1….html"
+  },
+  "scanned_at": "2026-11-02T07:05:00+00:00",
+  "_note": "content_features were computed by re-using the static extractor on rendered DOM. The full-model 99.66% accuracy claim does NOT apply to these rendered-DOM features; retraining or recalibration is required for production use."
+}
+```
+
+### Expected Artifacts
+
+After a successful scan, two files appear under `results/dynamic/`:
+
+| File | Contents | Max size |
+|---|---|---|
+| `screenshot_<scan_id>.png` | Full-page screenshot | 1 MB |
+| `rendered_<scan_id>.html` | DOM after JavaScript ran | 500 KB |
+
+> **Note**: Cookie *values* are never stored. Only name, domain, httpOnly flag, secure flag, and sameSite policy are forwarded to the main app. Raw DOM content is base64-encoded inside the container and decoded by the bridge; no content is logged.
+
+### Test Without Visiting Live URLs
+
+```powershell
+# All tests except test_dynamic_worker_sees_js_form run without Docker
+.venv\Scripts\Activate.ps1
+python -m unittest tests.test_dynamic -v
+
+# With Docker running, the full suite including Playwright runs:
+python -m unittest tests.test_dynamic -v
+# Expected: 17 tests, 0 failures, 0 errors (1 skipped when Docker is off)
+```
+
+### Resource Requirements
+
+| Resource | Limit (per scan) | Configurable via |
+|---|---|---|
+| Memory | 512 MB | `PHISHGUARD_DOCKER_MEM` env var |
+| CPU | 1.0 core | `PHISHGUARD_DOCKER_CPUS` env var |
+| Processes | 64 | `PHISHGUARD_DOCKER_PIDS` env var |
+| Scan timeout | 25 s (default) | `timeout` field in request, 5–60 s |
+| Output (DOM+PNG) | 3 MB total | Hard-coded cap in `dynamic_scan.py` |
+| Container lifetime | Ephemeral (`--rm`) | Not configurable |
+
+---
+
+## 🔒 Security Limitations of Dynamic Scanning
+
+> **This section documents what IS and is NOT protected. Read it before using dynamic scanning in any production or semi-public deployment.**
+
+### Implemented controls ✅
+
+| Control | Where |
+|---|---|
+| Private IP / loopback blocking (RFC 1918, 127/8, 169.254/16, cloud metadata) | `worker.py` (Playwright route intercept) AND `entrypoint.sh` (iptables) |
+| Blocked URL schemes (file://, ftp://, etc.) | `worker.py` pre-flight check |
+| Fresh browser context per scan (no reused cookies/profile) | `worker.py` (`browser.new_context()`) |
+| No form submission or page interaction | `worker.py` (read-only: screenshot + DOM only) |
+| Cookie values stripped before forwarding | `worker.py` (only name/domain/flags forwarded) |
+| DOM and screenshot size capped | `worker.py` (500 KB / 1 MB) |
+| Artifact filenames chosen by worker (UUID-based), not by page | `dynamic_scan.py` |
+| Non-root container user (uid 1001, `pwuser`) | `Dockerfile` |
+| Ephemeral container (`--rm`) | `dynamic_scan.py` docker command |
+| No host filesystem mounts | `docker compose` / `dynamic_scan.py` |
+| No application API keys forwarded to worker | `dynamic_scan.py` |
+| Failed/timeout scans never reported as "safe" | `dynamic_scan.py` |
+| Hard OS-level SIGALRM timeout | `worker.py` |
+
+### Remaining limitations ⚠️
+
+| Limitation | Details | Production remediation |
+|---|---|---|
+| **iptables requires NET_ADMIN** | Without `--cap-add NET_ADMIN`, the iptables egress rules in `entrypoint.sh` fail silently. Only the Playwright-layer filtering applies. On some hosted/managed container platforms, NET_ADMIN is not available. | Use a dedicated Docker network with explicit deny-all egress rules set at the host level, or run on infrastructure where NET_ADMIN is available. |
+| **DNS rebinding not blocked** | A malicious page could serve a public IP at DNS resolution time, then rebind to a private IP after the Playwright connection is established. | Run the container in an isolated network namespace with a DNS resolver that validates response IPs, or use a forward proxy that enforces IP ranges. |
+| **No JavaScript sandbox escape protection** | Playwright provides no protection against browser 0-day exploits. A hostile page could theoretically exploit a Chromium vulnerability to escape the browser. | Use a hardware VM (e.g., Firecracker microVM) for full kernel isolation. Never run dynamic scans as root or with elevated host privileges. |
+| **No per-domain rate limiting** | The API does not limit how often the same URL or domain can be dynamically scanned. | Add a Redis-backed rate limiter keyed on target registered domain. |
+| **Rendered DOM may differ from training data** | `content_features` on rendered HTML uses the same extractor trained on statically fetched PhiUSIIL data. The 99.66% accuracy figure does NOT apply. | Retrain `model_full` on a dataset of Playwright-rendered pages. The current rendered-DOM features are informational only. |
+| **No egress proxy** | The worker can reach any public IP not blocked by iptables. | Route all container egress through a forward proxy (e.g., Squid) that enforces an allowlist or additional filters. |
+
+---
 
 ---
 

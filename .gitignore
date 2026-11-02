@@ -1,77 +1,94 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+# ==============================================================================
+# PhishGuard .gitignore
+# ==============================================================================
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
+# ------------------------------------------------------------------------------
+# 1. Environment Variables & Secrets (NEVER push API keys / credentials)
+# ------------------------------------------------------------------------------
 .env
-.venv
-env/
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+# ------------------------------------------------------------------------------
+# 2. Virtual Environments
+# ------------------------------------------------------------------------------
+.venv/
 venv/
+env/
 ENV/
 env.bak/
 venv.bak/
 
-# IDEs and Editors
-.vscode/
+# ------------------------------------------------------------------------------
+# 3. Python Bytecode & Cache
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ------------------------------------------------------------------------------
+# 4. Runtime & Dynamic Scan Artifacts
+# ------------------------------------------------------------------------------
+results/dynamic/*
+!results/dynamic/.gitkeep
+*.log
+tmp/
+
+# ------------------------------------------------------------------------------
+# 5. Large Datasets & Caches (Keep repo light)
+# ------------------------------------------------------------------------------
+data/*.csv
+data/*.zip
+data/openphish_feed.txt
+data/host_features_cache.pkl
+*.pkl
+
+# ------------------------------------------------------------------------------
+# 6. Testing & Coverage
+# ------------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ------------------------------------------------------------------------------
+# 7. Distribution & Packaging
+# ------------------------------------------------------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+develop-eggs/
+eggs/
+.eggs/
+
+# ------------------------------------------------------------------------------
+# 8. Operating System Files
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ------------------------------------------------------------------------------
+# 9. IDEs & Editors
+# ------------------------------------------------------------------------------
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
 .project
 .pydevproject
 .settings/
-
-# Operating System files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
-
-# Testing and coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-
-# Large datasets & host caches (PhiUSIIL dataset: ~57MB, cache: ~56MB)
-data/PhiUSIIL_Phishing_URL_Dataset.csv
-data/PhiUSIIL_Phishing_URL_Dataset.csv.zip
-data/host_features_cache.pkl
-data/archive.zip
-data/openphish_feed.txt
-*.pkl
-
-# Logs & temporary files
-*.log
