@@ -171,13 +171,15 @@ class TestContentFeatures(unittest.TestCase):
             mock_context.new_page.return_value = mock_page
             mock_page.content.return_value = "<html><body><div id='root'>App Loaded</div></body></html>"
             mock_page.url = "https://spa.example.com/"
+            mock_page.goto.return_value.status = 200
 
             res = content.render_with_playwright("https://spa.example.com/", timeout=4.0)
 
             self.assertTrue(res["ok"])
             self.assertEqual(res["inspection_method"], "playwright_rendered")
             mock_page.goto.assert_called_once_with("https://spa.example.com/", wait_until="domcontentloaded")
-            mock_page.wait_for_timeout.assert_called_once_with(300)
+            self.assertEqual(mock_page.wait_for_timeout.call_args_list[0], mock.call(300))
+            self.assertLessEqual(mock_page.wait_for_timeout.call_count, 13)
             mock_page.wait_for_load_state.assert_not_called()
 
 

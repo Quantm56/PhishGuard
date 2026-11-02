@@ -1,3 +1,5 @@
+> **Current scoring policy:** Deployed verdicts use the trained host classifier plus inspected content/security rules. The legacy full classifier is retired because layout counts (especially internal-link count) caused false positives on ordinary login pages. Historical full-model benchmark numbers below do not describe the current live pipeline. The training script now trains only the deployed host model. No website-specific score overrides are used.
+
 # PhishGuard 🛡️
 
 [![CI](https://github.com/Quantm56/PhishGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/Quantm56/PhishGuard/actions/workflows/ci.yml)
@@ -516,3 +518,7 @@ If you utilize this benchmark or repository in your research, please cite the Ph
   publisher={Elsevier}
 }
 ```
+
+## API keys and inspection evidence
+
+See [API_KEYS.md](API_KEYS.md) for server key setup, provider limits, DOM and certificate display, and URL-variation behaviour.

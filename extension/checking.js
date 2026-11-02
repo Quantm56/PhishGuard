@@ -1,3 +1,4 @@
+import { renderEvidence } from './evidence.js';
 /**
  * PhishGuard Extension - Pre-Visit Checking Controller
  *
@@ -114,15 +115,15 @@ function notifyBackgroundStatus(status, result = null, error = null) {
  * Requests the background worker to install a temporary session allow rule for this tab,
  * then navigates to the target URL without being re-intercepted.
  */
-async function proceedToDestination() {
+async function proceedToDestination(destination = targetUrl) {
   try {
     const response = await chrome.runtime.sendMessage({
       action: 'ALLOW_ONCE',
-      url: targetUrl
+      url: destination
     });
 
     if (response && response.success) {
-      window.location.replace(targetUrl);
+      window.location.replace(destination);
     } else {
       throw new Error('Failed to obtain navigation clearance from background service worker.');
     }
@@ -148,6 +149,7 @@ function handleGoBack() {
  * Populates all dynamic text exclusively with textContent.
  */
 function renderWarning(data) {
+  renderEvidence(document.getElementById('scanEvidence'), data);
   showView(viewWarning);
   notifyBackgroundStatus('completed', data);
 
@@ -200,7 +202,7 @@ function renderWarning(data) {
     data.signals.forEach((s) => {
       const weight = typeof s.weight === 'number' ? s.weight : 0;
       const type = weight > 0 ? 'up' : weight < 0 ? 'down' : 'neutral';
-      const pts = (weight >= 0 ? '+' : '') + (weight * 100).toFixed(0) + ' pts';
+      const pts = ((s.change_pp || 0) >= 0 ? '+' : '') + (s.change_pp || 0).toFixed(2) + ' pp';
       items.push({
         tag: pts,
         type,
@@ -214,11 +216,11 @@ function renderWarning(data) {
     data.explanation.slice(0, 4).forEach((e) => {
       const effect = typeof e.effect === 'number' ? e.effect : 0;
       const type = effect > 0 ? 'up' : effect < 0 ? 'down' : 'neutral';
-      const pts = (effect >= 0 ? '+' : '') + (effect * 100).toFixed(1) + '%';
+      const pts = (effect >= 0 ? '+' : '') + (effect * 100).toFixed(1) + ' pp (what-if)';
       items.push({
         tag: pts,
         type,
-        text: `${e.meaning} (observed: ${e.value})`
+        text: `${e.meaning} (observed: ${e.value}; baseline: ${e.typical_legit}). Separate what-if check, not an additive contribution.`
       });
     });
   }
@@ -322,7 +324,7 @@ async function runPreVisitCheck() {
       statusChip.textContent = 'Safe Site';
       notifyBackgroundStatus('completed', data);
       // Automatically continue to destination
-      await proceedToDestination();
+      await proceedToDestination(data.navigation_url || targetUrl);
     } else {
       // SUSPICIOUS or PHISHING: Halt and present warning screen
       renderWarning(data);

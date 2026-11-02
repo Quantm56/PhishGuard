@@ -421,3 +421,12 @@ body {
   display: none !important;
 }
 
+
+.scan-evidence { margin: 16px 0; font-size: 12px; text-align: left; }
+.scan-evidence details { border-top: 1px solid #64748b; padding: 10px 0; }
+.scan-evidence summary { cursor: pointer; font-weight: 600; }
+.scan-evidence p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.scan-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; font-size: 11px; }
+.scan-evidence .good { color: #16a34a; }
+.scan-evidence .bad { color: #ef4444; }
+.scan-evidence .neutral { color: #94a3b8; }

@@ -14,8 +14,8 @@ export const CONFIG = {
     HEALTH: '/api/health'
   },
 
-  // Request timeout in milliseconds for pre-visit checking (bounded at 6s for responsive browsing)
-  CHECK_TIMEOUT_MS: 8000,
+  // Allow time for static fetch, rendering and redirected-origin intelligence.
+  CHECK_TIMEOUT_MS: 45000,
 
   // Temporary allow rule expiration in milliseconds (15s allows the navigation to complete smoothly)
   ALLOW_RULE_TTL_MS: 15000,

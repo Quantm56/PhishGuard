@@ -254,6 +254,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   const tabId = sender.tab ? sender.tab.id : message.tabId;
 
+  if (message.action === 'RESCAN_TAB') {
+    (async () => {
+      try {
+        const url = message.url;
+        if (!/^https?:\/\//i.test(url || '')) throw new Error('Unsupported URL');
+        const state = { status: 'checking', url, tabId, timestamp: Date.now() };
+        await removeSessionAllowRule(tabId);
+        await saveTabState(tabId, state);
+        await setTabBadge(tabId, CONFIG.BADGES.CHECKING);
+        await chrome.tabs.update(tabId, { url: chrome.runtime.getURL('checking.html') + '?url=' + encodeURI(url) });
+        sendResponse(state);
+      } catch (err) {
+        sendResponse({ status: 'error', url: message.url, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (message.action === 'ALLOW_ONCE') {
     (async () => {
       const ok = await allowOnceForTab(tabId, message.url);

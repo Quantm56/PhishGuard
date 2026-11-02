@@ -34,9 +34,12 @@
         "checking.js",
         "checking.css",
         "config.js",
-        "icons/*"
+        "icons/*",
+        "evidence.js"
       ],
-      "matches": ["*://*/*"]
+      "matches": [
+        "*://*/*"
+      ]
     }
   ],
   "icons": {

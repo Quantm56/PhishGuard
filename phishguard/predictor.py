@@ -7,13 +7,13 @@ Pipeline:
      - Evaluates page usability (detects bot-protection challenge pages & HTTP errors).
      - If JavaScript shell detected: Playwright headless Chromium renders dynamic DOM
        inside an isolated, SSRF-route-filtered environment.
-     - If usable content obtained: 22 robust content features extracted -> model_full
+     - If usable content obtained: 22 page observations extracted -> explicit content security rules
      - If content unavailable: model_host fallback with clear, documented explanation
        (NEVER penalises uninspected pages as malicious).
   3. OSINT enrichment (live): RDAP / WHOIS domain age, DNS resolution, TLS certificates,
      multi-source threat intelligence feeds.
   4. Probabilistic evidence combination:
-     - Calibrated prior from ML model.
+     - Trained host-model estimate (not claimed to be a calibrated live-site probability).
      - Bayesian log-odds likelihood updates from empirical OSINT, path, and content signals.
      - Active threat-feed listing triggers an immediate PHISHING verdict.
   5. Explainable verdict:
@@ -32,13 +32,12 @@ import numpy as np
 import pandas as pd
 
 from . import content, intel
-from .brands import BRANDS
 from .urlfeatures import HOST_FEATURES, host_features, is_free_hosting, normalize_url, parse, path_signals, registered_domain
 
 warnings.filterwarnings("ignore")
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
 
-# Verdict thresholds on the final calibrated risk score (0..1)
+# Verdict thresholds on the final evidence-adjusted risk score (0..1)
 T_PHISH, T_SUSPICIOUS = 0.70, 0.40
 
 FEATURE_HELP = {
@@ -66,8 +65,9 @@ FEATURE_HELP = {
 class PhishGuard:
     def __init__(self, model_dir: str = MODEL_DIR):
         self.m_host = joblib.load(os.path.join(model_dir, "model_host.joblib"))
-        self.m_full = joblib.load(os.path.join(model_dir, "model_full.joblib"))
-        self._owned = {d for ds in BRANDS.values() for d in ds}
+        # The legacy full model learned layout/collection shortcuts (e.g. zero
+        # navigation links => phishing). Never use it for deployed verdicts.
+        # Content is still inspected and contributes explicit security evidence.
 
     # -------------------------------------------------------------- ML
     @staticmethod
@@ -97,6 +97,8 @@ class PhishGuard:
                 "value": round(float(feats[c]), 3),
                 "typical_legit": round(float(base[c]), 3),
                 "effect": round(float(deltas[i]), 3),
+                "counterfactual_probability": round(float(P[i + 1]), 6),
+                "effect_pp": round(float(deltas[i]) * 100, 4),
                 "direction": "raises phishing risk" if deltas[i] > 0 else "lowers phishing risk"
             })
         return out
@@ -118,7 +120,7 @@ class PhishGuard:
         if live:
             with ThreadPoolExecutor(max_workers=2) as ex:
                 f_osint = ex.submit(intel.enrich, url)
-                f_page = ex.submit(content.safe_fetch, url) if fetch_page else None
+                f_page = ex.submit(content.fetch_with_fallback, url) if fetch_page else None
                 osint = f_osint.result()
                 if f_page:
                     try:
@@ -135,27 +137,59 @@ class PhishGuard:
         inspection_method = page.get("inspection_method", "static_http") if page else "none"
 
         # If static HTML was a JavaScript shell, attempt Playwright DOM rendering fallback
+        static_html = page.get("html", "") if page else ""
+        static_preview, rendered_preview = None, None
         if page and not usable and "headless rendering needed" in unusable_reason:
             try:
-                pw_res = content.render_with_playwright(url, timeout=5.0)
+                pw_res = content.render_with_playwright(page.get("final_url", url), timeout=5.0, static_html=static_html)
                 if pw_res.get("ok"):
+                    static_preview = pw_res.get("static_preview")
+                    rendered_preview = pw_res.get("rendered_preview")
                     page["html"] = pw_res["html"]
                     page["final_url"] = pw_res.get("final_url", url)
                     page["status"] = pw_res.get("status", 200)
                     inspection_method = "playwright_rendered"
                     is_html = True
                     usable, unusable_reason = content.page_usable(page)
+                    if not usable:
+                        unusable_reason = "Rendered DOM unavailable for analysis: " + unusable_reason
                 else:
                     unusable_reason = pw_res.get("error", unusable_reason)
             except Exception as e:
                 unusable_reason = f"Rendering fallback failed: {str(e)[:80]}"
 
+        # Use the observed destination for content context, never invent www/HTTPS aliases.
+        effective_url = page.get("final_url", url) if page else url
+        effective_sp, effective_host = parse(effective_url)
+        result["effective_url"] = effective_url
+        result["url_context"] = {
+            "submitted_url": url, "effective_url": effective_url,
+            "redirected": bool(page and not page.get("fallback_used") and page.get("n_redirects", 0)),
+            "fallback_used": bool(page and page.get("fallback_used")),
+            "fetch_url": page.get("fetch_url", url) if page else url,
+            "fetch_attempts": page.get("fetch_attempts", []) if page else [],
+            "submitted_transport": sp.scheme,
+            "transport": effective_sp.scheme,
+            "note": "The host model ignores a leading www. If the submitted address cannot connect, HTTPS and apex/www alternatives may be inspected; recovery attempts are shown separately from redirects."
+        }
+        # Refresh destination infrastructure after an observed origin change, retaining
+        # threat hits on the submitted URL as well as on the destination.
+        if live and (effective_sp.scheme, effective_sp.netloc) != (sp.scheme, sp.netloc):
+            destination_osint = intel.enrich(effective_url)
+            destination_osint = dict(destination_osint)
+            destination_osint["threat_intel"] = (osint or {}).get("threat_intel", []) + destination_osint.get("threat_intel", [])
+            # A malicious source redirecting to an established site must not inherit
+            # that site's registration reputation or erase its own host features.
+            if registered_domain(effective_host)[1:] != registered_domain(host)[1:]:
+                destination_osint["whois"] = (osint or {}).get("whois", {})
+                destination_osint["dns"] = (osint or {}).get("dns", {})
+            osint = destination_osint
         cf = None
         title = ""
         if is_html and usable:
-            cf = content.extract_content_features(page["html"], page["final_url"], page.get("n_redirects", 0))
+            cf = content.extract_content_features(page["html"], page["final_url"], page.get("n_substantive_redirects", page.get("n_redirects", 0)))
             feats_all.update(cf)
-            bundle, model_used = self.m_full, "full (host + page content)"
+            bundle, model_used = self.m_host, "host ML + inspected page security evidence"
             inspection_status = "inspected"
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(page["html"], "html.parser")
@@ -166,6 +200,8 @@ class PhishGuard:
                 "inspection_method": inspection_method,
                 "final_url": page.get("final_url", url),
                 "redirects": page.get("n_redirects", 0),
+                "redirect_chain": page.get("redirect_chain", []),
+                "model_redirects": page.get("n_substantive_redirects", page.get("n_redirects", 0)),
                 "title": title,
                 "content_features": {k: cf[k] for k in content.CONTENT_FEATURES}
             }
@@ -180,6 +216,29 @@ class PhishGuard:
                     "reason": page_err or unusable_reason or "Page content unavailable"
                 }
 
+        if page and "page" in result:
+            if static_preview is None and live:
+                static_preview = content.render_static_preview(static_html, page.get("final_url", url))
+            result["page"]["previews"] = {
+                "static_html": static_preview, "rendered_dom": rendered_preview,
+                "format": "jpeg_base64", "interactive": False,
+                "note": "Visual snapshots: static HTML with JavaScript off; DOM after Playwright execution. Inputs and links are inactive."
+            }
+            result["page"]["fetch_url"] = page.get("fetch_url", url)
+            result["page"]["fallback_used"] = bool(page.get("fallback_used"))
+            dom = page.get("html", "")
+            result["page"].update({
+                "final_url": effective_url,
+                "dom": dom[:100_000],
+                "dom_truncated": len(dom) > 100_000,
+                "dom_characters": len(dom),
+                "dom_kind": "rendered DOM" if inspection_method == "playwright_rendered" else "static HTML",
+            })
+        from .feature_display import describe_features
+        result["feature_assessments"] = {
+            "host": describe_features(hf),
+            "content": describe_features(cf or {}),
+        }
         ml_prob = self._proba(bundle, feats_all)
         result.update({
             "model_used": model_used,
@@ -205,9 +264,15 @@ class PhishGuard:
             d_lo = round(w * 4.0, 2)
             add_signal(s["name"], w, d_lo, s["detail"])
 
+        if effective_url != url:
+            existing = {s["name"] for s in signals}
+            for s in path_signals(effective_url):
+                if s["name"] not in existing:
+                    add_signal(s["name"], s["weight"], round(s["weight"] * 4, 2), s["detail"])
+
         # 2. Content Heuristics (only when content was inspected)
         if cf:
-            for s in content.content_signals(cf, sp.scheme, title, host):
+            for s in content.content_signals(cf, effective_sp.scheme, title, effective_host):
                 w = s["weight"]
                 d_lo = round(w * 5.0, 2)
                 add_signal(s["name"], w, d_lo, s["detail"])
@@ -237,7 +302,7 @@ class PhishGuard:
                     is_established_domain = True
                     add_signal("domain_established", -0.05, -0.4, f"Domain is {d // 365} years old")
             elif age_info.get("status") == "not_found":
-                add_signal("no_whois_record", 0.04, +0.2, "No RDAP registration record found (domain may be unregistered)")
+                add_signal("no_whois_record", 0.0, 0.0, "RDAP returned no record; registration age is unknown, not evidence of phishing")
 
             # DNS Resolution
             dns = osint.get("dns", {})
@@ -263,7 +328,7 @@ class PhishGuard:
         if cf:
             has_pw = bool(cf.get("HasPasswordField", 0))
             ext_form = bool(cf.get("HasExternalFormSubmit", 0))
-            if has_pw and not ext_form and sp.scheme == "https" and is_established_domain:
+            if has_pw and not ext_form and effective_sp.scheme == "https" and is_established_domain:
                 if not any(s["name"] == "title_brand_mismatch" for s in signals):
                     add_signal("legitimate_internal_auth", -0.08, -0.6,
                                "Authenticated login form submits securely within established domain origin")
@@ -278,22 +343,13 @@ class PhishGuard:
             # 2. Calibrated Evidence Fusion via Log-Odds
             p_prior = float(np.clip(ml_prob, 0.005, 0.995))
 
-            # Prior calibration for passive informational content (no credential form, no financial lure, no host abuse)
-            if cf:
-                has_forms_or_inputs = bool(cf.get("HasPasswordField", 0) or cf.get("HasSubmitButton", 0) or cf.get("HasExternalFormSubmit", 0))
-                has_lures = bool(cf.get("Bank", 0) or cf.get("Pay", 0) or cf.get("Crypto", 0) or cf.get("NoOfPopup", 0) or cf.get("NoOfiFrame", 0))
-                has_host_abuse = bool(hf.get("any_brand_abuse", 0) or hf.get("host_is_ip", 0))
-                if not has_forms_or_inputs and not has_lures and not has_host_abuse and is_established_domain and not listed:
-                    # Passive informational/doc page on established infrastructure cannot harvest credentials
-                    p_prior = min(p_prior, 0.25)
-
             l_prior = math.log(p_prior / (1.0 - p_prior))
             delta_l = sum(log_odds_deltas)
             l_final = l_prior + delta_l
             final = float(1.0 / (1.0 + math.exp(-l_final)))
 
             # Free hosting cap when page content was not inspected and host has no brand abuse
-            free_host_cap = is_free_hosting(host) and bundle is self.m_host and not hf.get("any_brand_abuse", 0)
+            free_host_cap = is_free_hosting(host) and cf is None and not hf.get("any_brand_abuse", 0)
             if free_host_cap:
                 final = min(final, T_PHISH - 0.05)
 
@@ -317,16 +373,44 @@ class PhishGuard:
                     reason = ("Page content could not be inspected (server protection or error), but domain reputation, "
                               "established age, and threat intelligence indicate legitimate infrastructure.")
                 else:
-                    reason = "No strong phishing indicators found. Legitimate characteristics confirmed."
+                    reason = "No strong phishing indicators found in the inspected evidence. A lower-risk result is not a guarantee of safety."
 
+        # Make the displayed arithmetic additive in percentage points. Each step
+        # applies a rule in log-odds, then reports its actual probability change.
+        p_running = float(np.clip(ml_prob, 0.005, 0.995))
+        steps = [{"label": "Model estimate", "score": ml_prob, "change_pp": 0.0}]
+        if p_running != ml_prob:
+            steps.append({"label": "Numerical clipping", "score": p_running, "change_pp": (p_running - ml_prob) * 100})
+        for signal in signals:
+            odds = math.log(p_running / (1 - p_running)) + signal["delta_lo"]
+            after = 1 / (1 + math.exp(-odds))
+            signal["change_pp"] = round((after - p_running) * 100, 6)
+            signal["odds_multiplier"] = round(math.exp(signal["delta_lo"]), 4)
+            steps.append({"label": signal["detail"], "score": after, "change_pp": (after - p_running) * 100})
+            p_running = after
+        if abs(final - p_running) > 1e-10:
+            steps.append({"label": "Threat-feed override" if listed else "Uninspected free-hosting limit", "score": final, "change_pp": (final - p_running) * 100})
+        steps.append({"label": "Final risk score", "score": final, "change_pp": 0.0})
         adj = sum(s["weight"] for s in signals)
         result.update({
             "signals": signals,
-            "rule_adjustment": round(adj, 3),
+            "rule_adjustment": round(adj, 3),  # legacy heuristic weights, not probability points
+            "score_breakdown": {"method": "log_odds_rules", "model_score": ml_prob,
+                                "final_score": final, "net_change_pp": (final - ml_prob) * 100,
+                                "steps": steps,
+                                "note": "Feature what-if effects overlap and must not be added. Rule steps below are sequential and additive in percentage points."},
+            "model_policy": "Trained host model with explicit content security rules. Legacy layout-based full model retired.",
             "final_score": round(final, 4),
             "verdict": verdict,
             "reason": reason,
             "osint": osint,
             "thresholds": {"phishing": T_PHISH, "suspicious": T_SUSPICIOUS}
         })
+        # Navigation recovery is offered only after inspection and verified TLS,
+        # within the same registered domain, and never for a warned/listed URL.
+        if (page and page.get("fallback_used") and verdict == "LEGITIMATE"
+                and inspection_status == "inspected" and effective_sp.scheme == "https"
+                and osint and osint.get("tls", {}).get("valid")
+                and registered_domain(effective_host)[1:] == registered_domain(host)[1:]):
+            result["navigation_url"] = effective_url
         return result

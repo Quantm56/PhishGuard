@@ -10,3 +10,6 @@ playwright>=1.40
 # optional
 # xgboost>=2.0        # if installed, train.py uses it instead of HistGradientBoosting
 # python-whois>=0.9   # WHOIS fallback when RDAP has no answer
+
+python-dotenv>=1.0
+cryptography>=42

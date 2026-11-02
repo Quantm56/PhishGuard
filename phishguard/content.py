@@ -11,10 +11,12 @@ Inspection Strategy:
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 import socket
-from urllib.parse import urljoin, urlsplit
+import time
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -24,7 +26,7 @@ except ImportError:  # pragma: no cover
     BeautifulSoup = None
 
 from .brands import LEGIT_EXTERNAL_DESTINATIONS, check_title_brand_mismatch
-from .urlfeatures import registered_domain
+from .urlfeatures import registered_domain, is_cosmetic_redirect, is_ip_host
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 MAX_BYTES = 2_000_000
@@ -53,6 +55,10 @@ class UnsafeTarget(Exception):
     pass
 
 
+class UnresolvableTarget(UnsafeTarget):
+    """DNS failed; distinct from a destination blocked for non-public addresses."""
+
+
 def assert_public_host(host: str) -> list[str]:
     """Resolve ``host`` and raise UnsafeTarget if any address is non-public. Returns the IPs."""
     if not host:
@@ -61,7 +67,7 @@ def assert_public_host(host: str) -> list[str]:
     try:
         infos = socket.getaddrinfo(host_clean, None)
     except socket.gaierror as e:
-        raise UnsafeTarget(f"DNS resolution failed: {e}") from e
+        raise UnresolvableTarget(f"DNS resolution failed: {e}") from e
     ips = sorted({i[4][0] for i in infos})
     for ip in ips:
         a = ipaddress.ip_address(ip.split("%")[0])
@@ -86,6 +92,8 @@ def safe_fetch(url: str, timeout: float = 6.0) -> dict:
     session = requests.Session()
     session.headers["User-Agent"] = UA
     cur, hops = url, 0
+    substantive_hops = 0
+    redirect_chain = []
     tls_valid = True
     tls_error = None
 
@@ -105,7 +113,10 @@ def safe_fetch(url: str, timeout: float = 6.0) -> dict:
             r = session.get(cur, timeout=timeout, allow_redirects=False, stream=True, verify=False)
 
         if r.is_redirect and r.headers.get("location") and hops < MAX_REDIRECTS:
-            cur = urljoin(cur, r.headers["location"])
+            destination = urljoin(cur, r.headers["location"])
+            substantive_hops += int(not is_cosmetic_redirect(cur, destination))
+            redirect_chain.append({"from": cur, "to": destination})
+            cur = destination
             hops += 1
             r.close()
             continue
@@ -126,6 +137,8 @@ def safe_fetch(url: str, timeout: float = 6.0) -> dict:
             "html": html,
             "final_url": cur,
             "n_redirects": hops,
+            "n_substantive_redirects": substantive_hops,
+            "redirect_chain": redirect_chain,
             "status": r.status_code,
             "content_type": r.headers.get("content-type", ""),
             "tls_valid": tls_valid,
@@ -133,6 +146,81 @@ def safe_fetch(url: str, timeout: float = 6.0) -> dict:
             "inspection_method": "static_http",
         }
 
+
+
+def fallback_urls(url: str) -> list[str]:
+    """HTTPS-first alternatives, only for standard-port public website names.
+
+    Never add www to a functional subdomain, strip userinfo, or downgrade HTTPS.
+    These are recovery attempts, not claims that two hosts are equivalent.
+    """
+    sp = urlsplit(url)
+    host = (sp.hostname or "").lower().rstrip(".")
+    try:
+        standard_port = sp.port in (None, 80 if sp.scheme == "http" else 443)
+    except ValueError:
+        return []
+    if sp.scheme not in ("http", "https") or not standard_port or sp.username or sp.password or is_ip_host(host):
+        return []
+    sub, _, _ = registered_domain(host)
+    candidates = []
+    if sp.scheme == "http":
+        candidates.append(urlunsplit(("https", host, sp.path, sp.query, sp.fragment)))
+    if sub in ("", "www"):
+        alternative = host[4:] if sub == "www" else "www." + host
+        candidates.append(urlunsplit(("https", alternative, sp.path, sp.query, sp.fragment)))
+    return [u for u in candidates if u != url]
+
+
+def fetch_with_fallback(url: str, timeout: float = 6.0) -> dict:
+    """Recover from transport failure, preserving evidence of the submitted failure.
+
+    No alternative is tried after an SSRF block or an HTTP error response. A
+    failing site is not made safe by choosing a different site's response.
+    """
+    attempts = []
+    try:
+        page = safe_fetch(url, timeout=timeout)
+        page["fetch_attempts"] = [{"url": url, "status": "response", "http_status": page.get("status")}]
+        page["fetch_url"] = url
+        page["fallback_used"] = False
+        return page
+    except UnresolvableTarget as error:
+        attempts.append({"url": url, "status": "failed", "reason": "DNS resolution failed"})
+        original_error = error
+    except UnsafeTarget:
+        raise
+    except requests.exceptions.SSLError:
+        raise
+    except (requests.Timeout, requests.ConnectionError) as error:
+        attempts.append({"url": url, "status": "failed", "reason": type(error).__name__})
+        original_error = error
+    for alternative in fallback_urls(url):
+        try:
+            page = safe_fetch(alternative, timeout=timeout)
+            if urlsplit(page.get("final_url", alternative)).scheme != "https":
+                attempts.append({"url": alternative, "status": "rejected", "reason": "HTTPS alternative downgraded to HTTP"})
+                continue
+            if not page.get("tls_valid", True):
+                raise requests.exceptions.SSLError("HTTPS recovery certificate verification failed")
+            if page.get("status", 200) >= 400:
+                attempts.append({"url": alternative, "status": "failed", "reason": f"HTTP {page['status']}"})
+                continue
+            attempts.append({"url": alternative, "status": "response", "http_status": page.get("status")})
+            page["fetch_attempts"] = attempts
+            page["fetch_url"] = alternative
+            page["fallback_used"] = True
+            return page
+        except UnresolvableTarget:
+            attempts.append({"url": alternative, "status": "failed", "reason": "DNS resolution failed"})
+        except UnsafeTarget:
+            # Stop; do not turn blocked resources into a reason to probe more names.
+            raise
+        except requests.exceptions.SSLError:
+            raise
+        except requests.RequestException as error:
+            attempts.append({"url": alternative, "status": "failed", "reason": type(error).__name__})
+    raise original_error
 
 def page_usable(page: dict) -> tuple[bool, str]:
     """Is the fetched page the site's real content?
@@ -167,7 +255,7 @@ def page_usable(page: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
+def render_with_playwright(url: str, timeout: float = 6.0, static_html: str | None = None) -> dict:
     """Render page with Playwright headless Chromium with strict SSRF protection.
 
     Every subresource and redirect destination is intercepted and validated against private IP ranges.
@@ -202,6 +290,7 @@ def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
             )
             context = browser.new_context(
                 java_script_enabled=True,
+                service_workers="block",
                 bypass_csp=False,
                 viewport={"width": 1280, "height": 800},
                 user_agent=UA,
@@ -216,21 +305,39 @@ def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
                     route.continue_()
 
             page = context.new_page()
-            page.route("**/*", route_filter)
+            context.route("**/*", route_filter)
             page.set_default_navigation_timeout(int(timeout * 1000))
             page.set_default_timeout(int(timeout * 1000))
 
             try:
+                started = time.monotonic()
                 resp = page.goto(url, wait_until="domcontentloaded")
-                # Short, bounded delay for dynamic DOM hydration (e.g. mounting root components)
-                try:
-                    page.wait_for_timeout(300)
-                except Exception:
-                    pass
+                # Poll for usable, stable content instead of capturing a transient SPA
+                # loading shell. Never wait for networkidle (analytics can run forever).
+                page.wait_for_timeout(300)
+                previous = None
+                stable_samples = 0
+                for _ in range(12):
+                    snapshot = page.content()
+                    current = (page.url, snapshot)
+                    usable, _reason = page_usable({"status": resp.status if resp else 200, "html": snapshot})
+                    stable_samples = stable_samples + 1 if current == previous else 0
+                    if usable and stable_samples >= 2:
+                        break
+                    if time.monotonic() - started >= timeout - 0.2:
+                        break
+                    previous = current
+                    page.wait_for_timeout(200)
 
                 status = resp.status if resp else 200
                 final_url = page.url
+                _wait_for_preview_assets(page)
                 rendered_html = page.content()
+                try:
+                    dom_preview = base64.b64encode(page.screenshot(type="jpeg", quality=75, timeout=2000)).decode("ascii")
+                except Exception:
+                    dom_preview = None
+                static_preview = _static_snapshot(browser, static_html, url) if static_html is not None else None
             finally:
                 context.close()
                 browser.close()
@@ -238,6 +345,8 @@ def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
             return {
                 "ok": True,
                 "html": rendered_html,
+                "rendered_preview": dom_preview,
+                "static_preview": static_preview,
                 "final_url": final_url,
                 "status": status,
                 "content_type": "text/html",
@@ -246,6 +355,77 @@ def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"Rendering failed: {str(e)[:100]}"}
 
+
+
+
+def _wait_for_preview_assets(page):
+    """Allow visible images and CSS backgrounds to decode; never wait indefinitely."""
+    try:
+        page.evaluate(r"""async () => {
+          const jobs = Array.from(document.images).map(i => i.decode().catch(() => {}));
+          const urls = new Set();
+          for (const el of Array.from(document.querySelectorAll('*')).slice(0, 600)) {
+            for (const match of getComputedStyle(el).backgroundImage.matchAll(/url\(["']?(.*?)["']?\)/g)) urls.add(match[1]);
+          }
+          for (const url of urls) {
+            const img = new Image(); img.src = url;
+            jobs.push(img.decode().catch(() => {}));
+          }
+          await Promise.race([Promise.allSettled(jobs), new Promise(resolve => setTimeout(resolve, 2000))]);
+        }""")
+    except Exception:
+        pass
+
+def _static_snapshot(browser, html: str, url: str) -> str | None:
+    """Render the fetched source with JavaScript off; only return a PNG snapshot."""
+    context = None
+    try:
+        context = browser.new_context(java_script_enabled=False, service_workers="block", viewport={"width": 1280, "height": 800})
+        page = context.new_page()
+        page.set_default_timeout(2500)
+        def guard_resource(route):
+            target = urlsplit(route.request.url)
+            try:
+                if target.scheme not in ("http", "https"):
+                    return route.abort()
+                assert_public_host(target.hostname or "")
+                route.continue_()
+            except Exception:
+                route.abort()
+        context.route("**/*", guard_resource)
+        soup = BeautifulSoup(html, "html.parser")
+        for base in soup.find_all("base"):
+            base.decompose()
+        base = soup.new_tag("base", href=url)
+        if soup.head:
+            soup.head.insert(0, base)
+        else:
+            soup.insert(0, base)
+        for refresh in soup.find_all("meta", attrs={"http-equiv": re.compile("refresh", re.I)}):
+            refresh.decompose()
+        page.set_content(str(soup), wait_until="domcontentloaded", timeout=2500)
+        page.wait_for_timeout(300)
+        _wait_for_preview_assets(page)
+        return base64.b64encode(page.screenshot(type="jpeg", quality=75, timeout=2000)).decode("ascii")
+    except Exception:
+        return None
+    finally:
+        if context:
+            context.close()
+
+
+def render_static_preview(html: str, url: str) -> str | None:
+    """Visualise static HTML even when no JavaScript rendering fallback was needed."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+            try:
+                return _static_snapshot(browser, html, url)
+            finally:
+                browser.close()
+    except Exception:
+        return None
 
 def extract_content_features(html: str, page_url: str, n_redirects: int = 0) -> dict[str, float]:
     """Compute CONTENT_FEATURES from HTML."""
@@ -351,9 +531,6 @@ def content_signals(cf: dict[str, float], scheme: str, title: str = "", host: st
     elif cf.get("HasExternalFormSubmit"):
         out.append({"name": "external_form_submit", "weight": 0.08,
                     "detail": "Form submits data to a different external domain"})
-    if cf.get("HasPasswordField") and not cf.get("HasFavicon") and not cf.get("HasDescription") and not cf.get("HasTitle"):
-        out.append({"name": "bare_login_page", "weight": 0.08,
-                    "detail": "Credential form hosted on a completely bare page (no title, favicon or metadata)"})
 
     # Title brand impersonation check
     if title and host:

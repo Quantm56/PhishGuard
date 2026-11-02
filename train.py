@@ -1,22 +1,10 @@
-"""Train and evaluate generalized phishing classifiers on PhiUSIIL.
+"""Train the deployed host classifier with domain-grouped evaluation.
 
-Key Improvements:
-  1. Removal of Spurious Shortcuts: Excludes LineOfCode and LargestLineLength which caused
-     severe false positives on minified HTML, SPAs, and clean modern websites.
-  2. Realistic Training Augmentation: Augments the legitimate training partition with modern
-     web architectures (SPAs, single-purpose login portals, clean documentation pages, subdomains)
-     so the model learns genuine security characteristics rather than page size.
-  3. Domain-Grouped Holdout Split: 70/15/15 split strictly grouped by registered domain, ensuring
-     zero domain leakage between training, validation, and evaluation.
-  4. Multi-Metric Evaluation: Evaluates Accuracy, Precision, Recall, F1, ROC-AUC, PR-AUC, FPR,
-     and performance on independently curated real-world legitimate and phishing samples.
-
-Outputs (models/, results/):
-  models/model_host.joblib     Host-only model (30 features)
-  models/model_full.joblib     Host + Content model (52 features)
-  results/metrics.json         Comprehensive benchmark metrics
-  results/roc_importance.png   ROC curves and feature importance plots
-  results/train_log.txt        Training execution log
+Page security evidence is applied by predictor.py as explicit rules. Layout
+counts are deliberately excluded from learned verdicts: the retired full model
+learned unreliable collection shortcuts. No site-specific scores are assigned.
+Train/validation/test domains remain disjoint; only training data is augmented.
+Outputs: models/model_host.joblib and current host-model metrics/plots.
 """
 from __future__ import annotations
 
@@ -43,7 +31,6 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
-from phishguard.content import CONTENT_FEATURES
 from phishguard.urlfeatures import HOST_FEATURES, host_features, parse, registered_domain
 
 warnings.filterwarnings("ignore")
@@ -101,7 +88,7 @@ def group_of(url: str) -> str:
 
 def load_features(sample: int | None):
     # Load dataset with refined content features
-    df = pd.read_csv(DATA, usecols=["URL", "label"] + CONTENT_FEATURES)
+    df = pd.read_csv(DATA, usecols=["URL", "label"])
     df = df.drop_duplicates(subset=["URL"]).reset_index(drop=True)
     df["y"] = 1 - df["label"].astype(int)  # 1 = phishing, 0 = legitimate
     if sample:
@@ -120,104 +107,24 @@ def load_features(sample: int | None):
             hf.to_pickle(CACHE)
         print(f"  done in {time.time() - t:.0f}s")
 
-    cf = df[CONTENT_FEATURES].astype(float).reset_index(drop=True)
     groups = df["URL"].map(group_of)
-    return df, hf, cf, groups
+    return df, hf, groups
 
 
-def augment_legit_data(df_tr: pd.DataFrame, hf_tr: pd.DataFrame, cf_tr: pd.DataFrame):
-    """Augment legitimate training data to resolve dataset collection shortcuts.
-
-    1. Subdomain diversity: Adds realistic functional & hyphenated subdomains (login, portal, modern-app, etc.)
-    2. Architecture diversity: Adds realistic profiles for modern SPAs, clean login pages,
-       minimal documentation, and standard applications to eliminate the false association
-       of minimal HTML/low-link counts with phishing.
-    Note: Validation and test splits are strictly NEVER augmented.
-    """
+def augment_legit_data(df_tr: pd.DataFrame, hf_tr: pd.DataFrame):
+    """Training-only subdomain diversity; never assign labels to user-supplied sites."""
     rng = np.random.RandomState(SEED)
-    leg_idx = np.where(df_tr["y"].values == 0)[0]
-    n_leg = len(leg_idx)
-
-    # 1. Subdomain augmentation
-    pick_sub = rng.choice(leg_idx, size=int(n_leg * 0.40), replace=False)
-    urls_sub = []
-    for i in pick_sub:
+    legit = np.where(df_tr["y"].values == 0)[0]
+    pick = rng.choice(legit, size=int(len(legit) * 0.40), replace=False)
+    urls = []
+    for i in pick:
         _, host = parse(df_tr["URL"].iloc[i])
         base = host[4:] if host.startswith("www.") else host
-        pre = NEUTRAL_PREFIXES[rng.randint(len(NEUTRAL_PREFIXES))]
+        prefix = NEUTRAL_PREFIXES[rng.randint(len(NEUTRAL_PREFIXES))]
         if rng.rand() < 0.15:
-            pre = NEUTRAL_PREFIXES[rng.randint(len(NEUTRAL_PREFIXES))] + "." + pre
-        urls_sub.append(f"https://{pre}.{base}/")
-    hf_sub = pd.DataFrame([host_features(u) for u in urls_sub], columns=HOST_FEATURES)
-    cf_sub = cf_tr.iloc[pick_sub].reset_index(drop=True)
-
-    # 2. Modern HTML Architecture diversity
-    n_arch = int(n_leg * 0.45)
-    pick_arch = rng.choice(leg_idx, size=n_arch, replace=False)
-    hf_arch = hf_tr.iloc[pick_arch].copy().reset_index(drop=True)
-
-    cf_arch_list = []
-    for _ in range(n_arch):
-        cat = rng.choice(["spa", "login", "minimal_doc", "minimal_doc", "minimal_doc", "standard_app"])
-        if cat == "spa":
-            # Modern SPA (e.g. Next.js, React, ChatGPT, Grok)
-            row = {
-                "HasTitle": 1.0, "HasFavicon": float(rng.rand() > 0.3), "HasDescription": float(rng.rand() > 0.5),
-                "IsResponsive": 1.0, "HasPasswordField": 0.0, "HasSubmitButton": float(rng.rand() > 0.6),
-                "HasHiddenFields": float(rng.rand() > 0.6), "HasExternalFormSubmit": 0.0,
-                "HasSocialNet": float(rng.rand() > 0.7), "HasCopyrightInfo": float(rng.rand() > 0.6),
-                "NoOfiFrame": float(rng.rand() > 0.85), "NoOfPopup": 0.0,
-                "NoOfImage": float(rng.choice([0, 0, 1, 2, 4])), "NoOfCSS": float(rng.choice([0, 1, 2, 4])),
-                "NoOfJS": float(rng.randint(1, 25)), "NoOfSelfRef": float(rng.choice([0, 1, 2, 3, 5, 8])),
-                "NoOfEmptyRef": 0.0, "NoOfExternalRef": float(rng.choice([0, 0, 1, 2, 4])),
-                "Bank": 0.0, "Pay": 0.0, "Crypto": 0.0, "NoOfURLRedirect": 0.0
-            }
-        elif cat == "login":
-            # Legitimate authentication/login portal (e.g. Google signin, Microsoft auth)
-            row = {
-                "HasTitle": 1.0, "HasFavicon": float(rng.rand() > 0.4), "HasDescription": float(rng.rand() > 0.6),
-                "IsResponsive": 1.0, "HasPasswordField": 1.0, "HasSubmitButton": 1.0,
-                "HasHiddenFields": float(rng.rand() > 0.4), "HasExternalFormSubmit": 0.0,
-                "HasSocialNet": float(rng.rand() > 0.8), "HasCopyrightInfo": float(rng.rand() > 0.5),
-                "NoOfiFrame": float(rng.rand() > 0.85), "NoOfPopup": 0.0,
-                "NoOfImage": float(rng.choice([0, 0, 1, 2, 4])), "NoOfCSS": float(rng.choice([0, 1, 2, 3])),
-                "NoOfJS": float(rng.randint(0, 15)), "NoOfSelfRef": float(rng.choice([0, 1, 2, 3, 5, 8])),
-                "NoOfEmptyRef": float(rng.rand() > 0.8), "NoOfExternalRef": float(rng.choice([0, 0, 1, 2])),
-                "Bank": float(rng.rand() > 0.9), "Pay": float(rng.rand() > 0.9), "Crypto": 0.0, "NoOfURLRedirect": 0.0
-            }
-        elif cat == "minimal_doc":
-            # Clean documentation / academic / text page
-            row = {
-                "HasTitle": 1.0, "HasFavicon": float(rng.rand() > 0.5), "HasDescription": float(rng.rand() > 0.7),
-                "IsResponsive": float(rng.rand() > 0.5), "HasPasswordField": 0.0, "HasSubmitButton": 0.0,
-                "HasHiddenFields": 0.0, "HasExternalFormSubmit": 0.0,
-                "HasSocialNet": float(rng.rand() > 0.8), "HasCopyrightInfo": float(rng.rand() > 0.6),
-                "NoOfiFrame": 0.0, "NoOfPopup": 0.0,
-                "NoOfImage": float(rng.choice([0, 0, 0, 1, 2])), "NoOfCSS": float(rng.choice([0, 0, 1, 2])),
-                "NoOfJS": float(rng.choice([0, 0, 0, 1, 2, 5])), "NoOfSelfRef": float(rng.choice([0, 1, 1, 2, 3, 5, 10])),
-                "NoOfEmptyRef": 0.0, "NoOfExternalRef": float(rng.choice([0, 0, 0, 1, 2, 5])),
-                "Bank": 0.0, "Pay": 0.0, "Crypto": 0.0, "NoOfURLRedirect": 0.0
-            }
-        else:
-            # Standard web app / tool page
-            row = {
-                "HasTitle": 1.0, "HasFavicon": float(rng.rand() > 0.2), "HasDescription": float(rng.rand() > 0.3),
-                "IsResponsive": 1.0, "HasPasswordField": float(rng.rand() > 0.7), "HasSubmitButton": float(rng.rand() > 0.4),
-                "HasHiddenFields": float(rng.rand() > 0.4), "HasExternalFormSubmit": 0.0,
-                "HasSocialNet": float(rng.rand() > 0.6), "HasCopyrightInfo": float(rng.rand() > 0.4),
-                "NoOfiFrame": float(rng.rand() > 0.7), "NoOfPopup": 0.0,
-                "NoOfImage": float(rng.randint(1, 10)), "NoOfCSS": float(rng.randint(1, 6)),
-                "NoOfJS": float(rng.randint(3, 30)), "NoOfSelfRef": float(rng.randint(2, 20)),
-                "NoOfEmptyRef": 0.0, "NoOfExternalRef": float(rng.randint(0, 5)),
-                "Bank": 0.0, "Pay": 0.0, "Crypto": 0.0, "NoOfURLRedirect": 0.0
-            }
-        cf_arch_list.append(row)
-
-    cf_arch = pd.DataFrame(cf_arch_list)[CONTENT_FEATURES]
-
-    hf_aug = pd.concat([hf_sub, hf_arch], ignore_index=True)
-    cf_aug = pd.concat([cf_sub, cf_arch], ignore_index=True)
-    return hf_aug, cf_aug
+            prefix = NEUTRAL_PREFIXES[rng.randint(len(NEUTRAL_PREFIXES))] + "." + prefix
+        urls.append(f"https://{prefix}.{base}/")
+    return pd.DataFrame([host_features(url) for url in urls], columns=HOST_FEATURES)
 
 
 def make_models():
@@ -293,7 +200,7 @@ def main():
         log_file.flush()
 
     log("[1/5] Loading PhiUSIIL dataset and extracting features")
-    df, hf, cf, groups = load_features(args.sample)
+    df, hf, groups = load_features(args.sample)
     y = df["y"]
     log(f"  Rows: {len(df):,} | Phishing: {int(y.sum()):,} | Legitimate: {int((1-y).sum()):,} | Unique Registered Domains: {groups.nunique():,}")
 
@@ -305,12 +212,10 @@ def main():
     va, te = rest[va_i], rest[te_i]
     log(f"  Train: {len(tr):,} | Val: {len(va):,} | Test: {len(te):,}")
 
-    hf_aug, cf_aug = augment_legit_data(df.iloc[tr], hf.iloc[tr], cf.iloc[tr])
+    hf_aug = augment_legit_data(df.iloc[tr], hf.iloc[tr])
     y_aug = pd.Series(np.zeros(len(hf_aug), dtype=int))
-    log(f"  Augmentation (Train only): +{len(hf_aug):,} legitimate samples across SPAs, login portals, docs, and subdomains")
+    log(f"  Augmentation (Train only): +{len(hf_aug):,} legitimate subdomain variants")
 
-    full = pd.concat([hf, cf], axis=1)
-    full_aug = pd.concat([hf_aug, cf_aug], axis=1)
 
     results = {
         "dataset": {
@@ -326,10 +231,9 @@ def main():
     }
 
     meta = {}
-    for key, X, label, Xa in [
-        ("host", hf, "Host / domain / lexical features (30 features)", hf_aug),
-        ("full", full, "Host + page content features (52 features, LineOfCode removed)", full_aug),
-    ]:
+    feature_runs = [("host", hf, "Host / domain / lexical features (30 features)", hf_aug)]
+    results["deployment"] = {"active_model": "host", "content_policy": "Explicit security evidence rules; layout features excluded", "legacy_full_deployed": False}
+    for key, X, label, Xa in feature_runs:
         table, fitted, best = run_feature_set(label, X, y, tr, va, te, Xa, y_aug)
         model = fitted[best]
         p_te = model.predict_proba(X.iloc[te])[:, 1]
@@ -358,7 +262,7 @@ def main():
             "baseline": baseline,
             "name": best,
             "key": key,
-            "version": "2.0-generalised"
+            "version": "3.0-host-security-evidence"
         }, os.path.join(MODELS, f"model_{key}.joblib"), compress=3)
 
         results["feature_sets"][key] = {
@@ -383,6 +287,8 @@ def main():
     try:
         fig, ax = plt.subplots(1, 2, figsize=(13, 5))
         for key, c in [("host", "#2b6cb0"), ("full", "#c53030")]:
+            if key not in results["feature_sets"]:
+                continue
             r = results["feature_sets"][key]
             ax[0].plot(r["roc"]["fpr"], r["roc"]["tpr"], color=c, lw=2,
                        label=f"{r['label']} (AUC {meta[key][1]['roc_auc']:.4f})")
@@ -391,9 +297,9 @@ def main():
         ax[0].legend(loc="lower right", fontsize=8)
         ax[0].grid(alpha=0.3)
 
-        imp = results["feature_sets"]["full"]["importance"][:12][::-1]
+        imp = results["feature_sets"]["host"]["importance"][:12][::-1]
         ax[1].barh([i["feature"] for i in imp], [i["importance"] for i in imp], color="#2b6cb0")
-        ax[1].set(title="Feature Importance (Full Generalised Model)", xlabel="Permutation F1 drop")
+        ax[1].set(title="Feature Importance (Deployed Host Model)", xlabel="Permutation F1 drop")
         ax[1].grid(axis="x", alpha=0.3)
 
         plt.tight_layout()

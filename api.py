@@ -7,12 +7,15 @@
 import json
 import os
 
+from dotenv import load_dotenv
+
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 from phishguard.predictor import PhishGuard
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(ROOT, "results")
+load_dotenv(os.path.join(ROOT, ".env"), override=False)
 
 app = Flask(__name__)
 _guard = None
@@ -42,7 +45,10 @@ def add_cors_headers(response):
 def health():
     if request.method == "OPTIONS":
         return "", 204
-    return jsonify(status="ok")
+    return jsonify(status="ok", integrations={
+        name: bool(os.getenv(name)) for name in
+        ("GSB_API_KEY", "VT_API_KEY", "URLHAUS_AUTH_KEY", "PHISHTANK_APP_KEY")
+    })
 
 
 @app.route("/api/predict", methods=["POST", "OPTIONS"])
@@ -69,7 +75,10 @@ def metrics():
     if not os.path.exists(path):
         return jsonify(error="Run train.py first"), 404
     with open(path) as f:
-        return jsonify(json.load(f))
+        data = json.load(f)
+    data["deployment"] = {"active_model": "host", "legacy_full_deployed": False,
+                          "content_policy": "Inspected security rules; legacy full-model benchmarks are archival"}
+    return jsonify(data)
 
 
 @app.get("/results/<path:name>")

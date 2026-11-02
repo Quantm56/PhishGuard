@@ -44,6 +44,9 @@
   .note{font-size:13px;color:var(--mut)}
   .warn{border-left:4px solid var(--blue);padding:10px 14px;background:var(--bg);font-size:13px;border-radius:4px}
   code{background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .good{color:var(--green)}.bad{color:var(--red)}.neutral{color:var(--mut)}
+  pre.evidence{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;background:var(--bg);padding:12px;font-size:12px}
+  details{margin:12px 0}summary{cursor:pointer;font-weight:600}
   .hide{display:none}.ex a{cursor:pointer;color:var(--blue);margin-right:12px;font-size:13px;text-decoration:underline}
   img{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style>
@@ -94,12 +97,12 @@
         <ul>
           <li><b>Tier 1 (Static Fetch)</b>: SSRF-guarded HTTP retrieval with TLS verification.</li>
           <li><b>Tier 2 (Headless Chromium Fallback)</b>: When a JavaScript shell is detected, Playwright renders dynamic DOM in an isolated context with subresource route filtering.</li>
-          <li><b>Content Features (22 Features)</b>: Structured forms, inputs, passwords, stylesheets, scripts, and anchors. Toxic dataset shortcuts (LineOfCode) have been eliminated.</li>
+          <li><b>Page Evidence (22 observations)</b>: Forms, inputs, passwords, scripts and anchors remain visible. Content security rules inspect credential submission and impersonation. The legacy full model is retired because layout counts produced false positives.</li>
           <li><b>Unavailable Handling</b>: Bot-protection challenges (Cloudflare, SiteGround) or HTTP errors are explicitly marked as unavailable rather than penalised as phishing.</li>
         </ul>
       </li>
       <li><b>OSINT &amp; Network Intelligence</b>: Real-time RDAP domain registration age, DNS resolution, verified TLS certificate status, and threat intelligence lookups (OpenPhish, PhishTank, URLhaus, Google Safe Browsing, VirusTotal).</li>
-      <li><b>Probabilistic Evidence Fusion</b>: Combines calibrated ML probability with Bayesian log-odds likelihood updates for domain age, TLS, and URI indicators.</li>
+      <li><b>Probabilistic Evidence Fusion</b>: Uses the trained host model estimate and explicit security rules for inspected content, domain age, TLS and URL indicators. Rule weights are heuristic odds updates; the final score is not a validated real-world probability.</li>
       <li><b>Verdicts</b>: <code>PHISHING</code> (&ge; 70%), <code>SUSPICIOUS</code> (40% &ndash; 69%), <code>LEGITIMATE</code> (&lt; 40%).</li>
     </ol>
   </div>
@@ -133,25 +136,34 @@ async function run(){
 function show(h){const o=$('#out');o.classList.remove('hide');o.innerHTML=h;}
 const colour=v=>v>=.7?'var(--red)':v>=.4?'var(--amber)':'var(--green)';
 
+function featureValue(d,group,k,v){
+  const a=d.feature_assessments?.[group]?.[k]||{status:'neutral',detail:'Context dependent'};
+  const label={good:'Favourable',bad:'Review',neutral:'Context dependent'}[a.status];
+  return `<td class="${a.status}" title="${esc(a.detail)}"><b>${esc(k)}</b>: ${esc(Math.round(v*1000)/1000)}<br><small>${label}</small></td>`;
+}
 function render(d){
   let h=`<div class="card"><div class="verdict"><div class="badge ${d.verdict}">${d.verdict}</div>
    <div style="flex:1;min-width:220px"><div class="row" style="justify-content:space-between">
-   <b>Calibrated Risk Score: ${(d.final_score*100).toFixed(1)}%</b>
-   <span class="note">ML Prior ${(d.ml_probability*100).toFixed(1)}% &middot; Rules ${d.rule_adjustment>=0?'+':''}${(d.rule_adjustment*100).toFixed(0)}%</span></div>
+   <b>Risk score: ${(d.final_score*100).toFixed(1)}%</b>
+   <span class="note">Model ${(d.ml_probability*100).toFixed(1)}% &middot; Net evidence change ${d.score_breakdown?.net_change_pp>=0?'+':''}${(d.score_breakdown?.net_change_pp??0).toFixed(2)} percentage points</span></div>
    <div class="bar" style="margin-top:8px"><i style="width:${d.final_score*100}%;background:${colour(d.final_score)}"></i>
    <span class="tick" style="left:40%"></span><span class="tick" style="left:70%"></span></div></div></div>
    <p style="margin:12px 0 0;font-size:14.5px"><b>Assessment:</b> ${esc(d.reason)}</p>
    <p class="note" style="margin:4px 0 0">Target: <code>${esc(d.host)}</code> &middot; Domain: <code>${esc(d.registered_domain)}</code> &middot; Inference Model: ${esc(d.model_used)}</p></div>`;
 
-  h+=`<div class="grid"><div class="card"><h2>Model Risk Drivers (Occlusion)</h2>`;
+  h+=`<div class="card"><h2>URL &amp; Transport Context</h2><p>Submitted: <code>${esc(d.url)}</code><br>Inspected address: <code>${esc(d.effective_url||d.url)}</code></p><p class="note">${esc(d.url_context?.note||'')} Scores below 40% are lower risk; 40–69.9% require caution; 70% or above are high risk. A lower score is not a guarantee of safety.</p>${d.url_context?.transport==='http'?'<p class="bad">Unencrypted HTTP connection. Avoid entering passwords or payment details.</p>':''}</div>`;
+  if(d.url_context?.fallback_used){
+    h+=`<div class="card"><h2>Address recovery</h2><p>The submitted address could not connect. Inspected <code>${esc(d.url_context.fetch_url)}</code> instead. This was a recovery attempt, not an observed redirect from the submitted address.</p><table><tr><th>Attempt</th><th>Outcome</th></tr>${(d.url_context.fetch_attempts||[]).map(a=>`<tr><td><code>${esc(a.url)}</code></td><td>${esc(a.status)} ${esc(a.reason||a.http_status||'')}</td></tr>`).join('')}</table></div>`;
+  }
+  h+=`<div class="grid"><div class="card"><h2>Model what-if checks (not additive)</h2>`;
   if(d.explanation && d.explanation.length){
     const mx=Math.max(...d.explanation.map(e=>Math.abs(e.effect)));
     d.explanation.forEach(e=>{
-      h+=`<div class="ebar"><span class="l">${esc(e.meaning)} <span class="note">(${e.value})</span></span>
+      h+=`<div class="ebar" title="Model: ${(d.ml_probability*100).toFixed(2)}%. If only ${esc(e.feature)} changed from ${e.value} to baseline ${e.typical_legit}: ${((e.counterfactual_probability??d.ml_probability-e.effect)*100).toFixed(2)}%. This is a separate experiment."><span class="l">${esc(e.meaning)} <span class="note">(${e.value})</span></span>
         <div style="width:${Math.max(4,Math.abs(e.effect)/mx*120)}px;background:${e.effect>0?'var(--red)':'var(--green)'}"></div>
-        <span class="${e.effect>0?'up':'down'}">${e.effect>0?'+':''}${(e.effect*100).toFixed(1)}%</span></div>`;
+        <span class="${e.effect>0?'up':'down'}">${e.effect>0?'+':''}${(e.effect*100).toFixed(1)} pp</span></div>`;
     });
-    h+=`<p class="note" style="margin-top:8px">Change in risk probability if the feature matched a typical legitimate site.</p>`;
+    h+=`<p class="note" style="margin-top:8px">Each row independently replaces one feature with its training baseline. Effects overlap: do not add them. “pp” means percentage points of the model estimate, before rules.</p>`;
   } else {
     h+=`<p class="note">No anomalous features detected relative to typical legitimate websites.</p>`;
   }
@@ -160,7 +172,7 @@ function render(d){
   if(d.signals && d.signals.length){
     h+='<table>';
     d.signals.forEach(s=>{
-      h+=`<tr><td class="${s.weight>0?'up':s.weight<0?'down':''}" style="white-space:nowrap">${s.weight>0?'+':''}${(s.weight*100).toFixed(0)}%</td><td>${esc(s.detail)}</td></tr>`;
+      h+=`<tr><td class="${s.weight>0?'up':s.weight<0?'down':''}" style="white-space:nowrap">${s.change_pp>=0?'+':''}${(s.change_pp??0).toFixed(2)} pp</td><td>${esc(s.detail)}</td></tr>`;
     });
     h+='</table>';
   } else {
@@ -168,6 +180,11 @@ function render(d){
   }
   h+=`</div></div>`;
 
+  if(d.score_breakdown){
+    h+=`<div class="card"><h2>How this score was calculated</h2><p class="note">Start with the trained model estimate. Evidence updates the odds; the table shows each resulting change in percentage points, in order. These changes add up to the final score. This score is an estimate, not a measured probability that the website is malicious.</p><table><tr><th>Step</th><th>Change</th><th>Score after step</th></tr>`;
+    d.score_breakdown.steps.forEach((s,i)=>{h+=`<tr><td>${esc(s.label)}</td><td>${i===0||i===d.score_breakdown.steps.length-1?'—':(s.change_pp>=0?'+':'')+s.change_pp.toFixed(2)+' pp'}</td><td>${(s.score*100).toFixed(2)}%</td></tr>`});
+    h+='</table></div>';
+  }
   if(d.osint){
     const o=d.osint;
     h+=`<div class="card"><h2>OSINT &amp; Threat Intelligence</h2><table>
@@ -175,7 +192,16 @@ function render(d){
     <tr><th>DNS Resolution</th><td>${o.dns.status==='ok'?(o.dns.resolves?`<span class="clean">Resolves</span> (${esc(o.dns.ips.join(', '))})`:'<span class="up">Does not resolve</span>'):'<span class="note">Unavailable</span>'}</td></tr>
     <tr><th>TLS Certificate</th><td>${o.tls.status==='ok'?`${o.tls.valid?'<span class="clean">Valid Certificate</span>':'<span class="up">Verification Failed: '+esc(o.tls.error||'')+'</span>'} &middot; Issuer: ${esc(o.tls.issuer||'Unknown')} &middot; Issued: ${o.tls.age_days??'?'} days ago`:`<span class="note">${esc(o.tls.status)} &middot; ${esc(o.tls.detail||'')}</span>`}</td></tr>
     ${o.threat_intel.map(t=>`<tr><th>${esc(t.source)}</th><td><span class="pill ${t.status}">${t.status.toUpperCase()}</span> <span class="note">${esc(t.detail)}</span></td></tr>`).join('')}
-    </table></div>`;
+    </table>`;
+    const t=o.tls;
+    if(t.status==='ok'){
+      h+=`<details><summary>Certificate details for ${esc(t.host||d.host)}</summary><p class="note">TLS verifies the connection and hostname; it does not prove a site is trustworthy.</p><table>`;
+      for(const [label,value] of Object.entries({Subject:t.subject,Issuer:t.issuer_dn,'Valid from':t.not_before,'Valid until':t.not_after,'Days until expiry':t.expires_in_days,'Covered hostnames':t.san?.join(', '),'Serial number':t.serial_number,'SHA-256 fingerprint':t.sha256,'TLS version':t.tls_version})){
+        h+=`<tr><th>${esc(label)}</th><td style="overflow-wrap:anywhere">${esc(value??'Unavailable')}</td></tr>`;
+      }
+      h+=`</table><pre class="evidence">${esc(t.pem||'Certificate bytes unavailable')}</pre></details>`;
+    }
+    h+='</div>';
   }
 
   if(d.page){
@@ -187,20 +213,30 @@ function render(d){
     if(p.inspection_status === 'unavailable' || p.reason || p.error){
       h+=`<p class="note">${esc(p.reason || p.error)} &mdash; The system automatically used the host-level detection model without penalising the URL.</p>`;
     } else {
-      h+=`<p class="note">Final URL: <code>${esc(p.final_url)}</code> &middot; Status: HTTP ${p.status} &middot; Redirects: ${p.redirects} &middot; Title: <b>${esc(p.title || '(none)')}</b></p><table><tr>`;
+      h+=`<p class="note">Final URL: <code>${esc(p.final_url)}</code> &middot; Status: HTTP ${p.status} &middot; HTTP redirects: ${p.redirects} (counted for scoring: ${p.model_redirects??p.redirects}) &middot; Title: <b>${esc(p.title || '(none)')}</b></p><table><tr>`;
       const entries = Object.entries(p.content_features || {});
       entries.forEach(([k,v],i)=>{
-        h+=`<td><b>${esc(k)}</b>: ${v}</td>`;
+        h+=featureValue(d,"content",k,v);
         if(i%3===2)h+='</tr><tr>';
       });
       h+='</tr></table>';
     }
+    if(p.redirect_chain?.length)h+=`<details><summary>Observed HTTP redirect chain</summary><ol>${p.redirect_chain.map(r=>`<li><code>${esc(r.from)}</code> → <code>${esc(r.to)}</code></li>`).join('')}</ol><p class="note">Redirects that only add www, upgrade to HTTPS, or add a root slash are excluded from the model redirect count.</p></details>`;
+    if(p.previews){
+      h+=`<p class="note">${esc(p.previews.note)}</p>`;
+      for(const [key,label] of [['static_html','Static HTML — visual preview'],['rendered_dom','Rendered DOM — visual preview']]){
+        if(p.previews[key])h+=`<details ${key==='rendered_dom'||!p.previews.rendered_dom?'open':''}><summary>${label}</summary><p class="note">${key==='static_html'?'HTML before JavaScript. A JavaScript-only site may appear blank here; see the rendered DOM preview.':'Captured after JavaScript rendering. This is a visual snapshot; controls are inactive.'}</p><img class="page-preview" alt="${label}" src="data:image/jpeg;base64,${esc(p.previews[key])}"></details>`;
+      }
+      if(!p.previews.static_html&&!p.previews.rendered_dom)h+='<p class="note">Visual preview unavailable. Install Playwright Chromium and retry.</p>';
+    }
+    if(p.dom!==undefined)h+=`<details><summary>${esc(p.dom_kind||'Captured HTML')} (${p.dom_characters} characters${p.dom_truncated?', preview truncated to 100,000 characters':''})</summary><p class="note">Source code for the visual capture (optional).</p><pre class="evidence">${esc(p.dom)}</pre></details>`;
     h+='</div>';
   }
 
-  h+=`<div class="card"><h2>Extracted Host Features (30)</h2><table><tr>`;
+  h+=`<div class="card"><h2>Extracted Host Features (30)</h2>`;
+  h+='<p class="note">Green: favourable observation · Red: review indicator · Grey: context dependent. Individual features do not prove safety or phishing.</p><table><tr>';
   Object.entries(d.host_features).forEach(([k,v],i)=>{
-    h+=`<td><b>${esc(k)}</b>: ${Math.round(v*1000)/1000}</td>`;
+    h+=featureValue(d,"host",k,v);
     if(i%3===2)h+='</tr><tr>';
   });
   h+='</tr></table></div>';
@@ -220,7 +256,8 @@ async function loadPerf(){
     <p>${ds.rows.toLocaleString()} unique URLs &middot; ${ds.phishing.toLocaleString()} phishing &middot; ${ds.legitimate.toLocaleString()} legitimate &middot; ${ds.unique_domains.toLocaleString()} distinct registered domains.
     Partitioned strictly by <b>registered domain</b> (Train: ${ds.split.train.toLocaleString()} / Val: ${ds.split.val.toLocaleString()} / Test: ${ds.split.test.toLocaleString()}) guaranteeing zero domain leakage. +${(ds.augmented_legit_rows||0).toLocaleString()} legitimate samples augmented across modern SPAs, documentation pages, and login portals in training only.</p></div>`;
 
-  for(const k of ['host','full']){
+  h+='<div class="card"><b>Deployed model: host ML + inspected page security evidence.</b><p class="note">Full-model results below are archival dataset benchmarks. That model is retired and does not determine current verdicts. These benchmarks do not validate the complete live pipeline.</p></div>';
+  for(const k of ['host','full'].filter(k=>m.feature_sets[k])){
     const f=m.feature_sets[k];
     h+=`<div class="card"><h2>${esc(f.label)}</h2><table><tr><th>Model</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1 Score</th><th>ROC-AUC</th><th>False Positive Rate</th></tr>`;
     for(const [n,v] of Object.entries(f.models)){
@@ -239,8 +276,8 @@ async function loadPerf(){
       <tr><td>Phishing Detection Recall</td><td><b>${pct(h_eval.recall_on_handwritten_phish_urls)}</b></td><td>100% detection rate on brand impersonation, typosquatting, and phishing kits</td></tr>
     </table></div>`;
 
-  h+=`<div class="card"><h2>Feature Importance (Generalised Full Model)</h2>`;
-  const imp=m.feature_sets.full.importance.slice(0,12),mx=Math.max(...imp.map(i=>i.importance));
+  h+=`<div class="card"><h2>Feature Importance (Deployed Host Model)</h2>`;
+  const imp=m.feature_sets.host.importance.slice(0,12),mx=Math.max(...imp.map(i=>i.importance));
   imp.forEach(i=>h+=`<div class="ebar"><span class="l">${esc(i.feature)}</span><div style="width:${Math.max(3,i.importance/mx*300)}px;background:var(--blue)"></div><span>${i.importance.toFixed(4)}</span></div>`);
   h+=`<div style="margin-top:16px"><img src="/results/roc_importance.png" alt="ROC and importance plots"></div></div>`;
   $('#perfbody').innerHTML=h;

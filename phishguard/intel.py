@@ -14,6 +14,7 @@ Design rules
 from __future__ import annotations
 
 import base64
+import hashlib
 import concurrent.futures as cf
 import datetime as dt
 import os
@@ -24,6 +25,7 @@ import time
 import requests
 
 from .urlfeatures import is_ip_host, parse, registered_domain
+from .content import assert_public_host
 
 TIMEOUT = 6
 HEADERS = {"User-Agent": "PhishGuard/1.0 (academic project)"}
@@ -62,7 +64,7 @@ def domain_age(host: str) -> dict:
                 return {"status": "ok", "domain": domain, "created": d.date().isoformat(),
                         "age_days": (_now() - d).days, "registrar": registrar, "source": "RDAP"}
         elif r.status_code == 404:
-            return {"status": "not_found", "domain": domain, "detail": "no RDAP record (domain may be unregistered)"}
+            return {"status": "not_found", "domain": domain, "detail": "no RDAP record; registration age unknown (registry coverage can be incomplete)"}
     except Exception as e:  # noqa: BLE001
         err = str(e)[:120]
     else:
@@ -98,6 +100,10 @@ def tls_info(host: str, port: int = 443) -> dict:
     """Fetch the certificate (verification on first; if that fails, retry unverified to describe it)."""
     if is_ip_host(host):
         return {"status": "skipped", "detail": "host is an IP address"}
+    try:
+        assert_public_host(host)
+    except Exception as e:
+        return {"status": "unavailable", "detail": str(e)[:100]}
     verified, verify_err = True, None
     for verify in (True, False):
         try:
@@ -107,19 +113,37 @@ def tls_info(host: str, port: int = 443) -> dict:
                 ctx.verify_mode = ssl.CERT_NONE
             with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
                 with ctx.wrap_socket(sock, server_hostname=host) as s:
-                    cert = s.getpeercert()
-                    if not cert:                                           # unverified mode returns {} - nothing to parse
-                        return {"status": "ok", "valid": False, "error": verify_err, "detail": "certificate not verifiable"}
-                    nb = dt.datetime.strptime(cert["notBefore"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.timezone.utc)
-                    na = dt.datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.timezone.utc)
-                    issuer = dict(x[0] for x in cert.get("issuer", []))
-                    subject = dict(x[0] for x in cert.get("subject", []))
+                    from cryptography import x509
+                    from cryptography.hazmat.primitives import serialization
+                    from cryptography.x509.oid import NameOID
+                    der = s.getpeercert(binary_form=True)
+                    cert = x509.load_der_x509_certificate(der)
+                    nb = cert.not_valid_before_utc
+                    na = cert.not_valid_after_utc
+                    def label(name):
+                        for oid in (NameOID.ORGANIZATION_NAME, NameOID.COMMON_NAME):
+                            values = name.get_attributes_for_oid(oid)
+                            if values:
+                                return values[0].value
+                        return name.rfc4514_string()
+                    try:
+                        sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+                    except x509.ExtensionNotFound:
+                        sans = []
                     return {"status": "ok", "valid": verified, "error": verify_err,
-                            "issuer": issuer.get("organizationName") or issuer.get("commonName"),
-                            "self_signed": issuer == subject, "age_days": (_now() - nb).days,
+                            "host": host, "port": port,
+                            "issuer": label(cert.issuer), "subject": cert.subject.rfc4514_string(),
+                            "issuer_dn": cert.issuer.rfc4514_string(),
+                            "san": sans, "serial_number": format(cert.serial_number, "X"),
+                            "sha256": hashlib.sha256(der).hexdigest(),
+                            "not_before": nb.isoformat(), "not_after": na.isoformat(),
+                            "pem": cert.public_bytes(serialization.Encoding.PEM).decode("ascii"),
+                            "tls_version": s.version(),
+                            "self_signed": cert.issuer == cert.subject,
+                            "age_days": (_now() - nb).days,
                             "expires_in_days": (na - _now()).days}
         except ssl.SSLCertVerificationError as e:
-            verified, verify_err = False, e.verify_message
+            verified, verify_err = False, getattr(e, "verify_message", str(e))
             continue
         except (socket.timeout, ConnectionRefusedError, OSError) as e:
             return {"status": "unavailable", "detail": f"no TLS on port {port}: {str(e)[:80]}"}
@@ -209,7 +233,7 @@ def check_gsb(url: str) -> dict:
             return {"source": "Google Safe Browsing", "status": "listed", "detail": m[0].get("threatType", "threat")}
         return {"source": "Google Safe Browsing", "status": "clean", "detail": "no match"}
     except Exception as e:  # noqa: BLE001
-        return {"source": "Google Safe Browsing", "status": "unavailable", "detail": str(e)[:100]}
+        return {"source": "Google Safe Browsing", "status": "unavailable", "detail": "Lookup failed; check API key, permissions, quota and connectivity."}
 
 
 def check_virustotal(url: str) -> dict:
@@ -220,7 +244,7 @@ def check_virustotal(url: str) -> dict:
         uid = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         r = requests.get(f"https://www.virustotal.com/api/v3/urls/{uid}", headers={"x-apikey": key}, timeout=TIMEOUT)
         if r.status_code == 404:
-            return {"source": "VirusTotal", "status": "clean", "detail": "URL never scanned by VirusTotal"}
+            return {"source": "VirusTotal", "status": "unavailable", "detail": "URL never scanned by VirusTotal"}
         r.raise_for_status()
         st = r.json()["data"]["attributes"]["last_analysis_stats"]
         bad = st.get("malicious", 0) + st.get("phishing", 0)

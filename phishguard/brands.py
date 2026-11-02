@@ -72,7 +72,6 @@ BRANDS = {
     "airtel": {"airtel.in", "airtel.com"},
     "swiggy": {"swiggy.com"},
     "zomato": {"zomato.com"},
-    "manipal": {"manipal.edu"},
 }
 
 # Short / dictionary-like brand labels: only used for exact-lookalike (typosquat) checks,
