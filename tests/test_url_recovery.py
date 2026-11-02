@@ -14,6 +14,11 @@ def response(url, **extra):
 
 
 class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        renderer = patch.object(content, 'render_with_playwright', return_value={"ok": False, "error": "Renderer not part of this unit test"})
+        renderer.start()
+        self.addCleanup(renderer.stop)
+
     def test_candidates_preserve_path_query_and_functional_subdomains(self):
         self.assertEqual(content.fallback_urls('http://example.com/a?x=1'), ['https://example.com/a?x=1', 'https://www.example.com/a?x=1'])
         self.assertEqual(content.fallback_urls('https://www.example.com/a'), ['https://example.com/a'])

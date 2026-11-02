@@ -15,6 +15,9 @@ class ScoringPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.guard = PhishGuard()
+        cls.renderer_patch = patch.object(content, 'render_with_playwright', return_value={"ok": False, "error": "Renderer not part of this unit test"})
+        cls.renderer_patch.start()
+        cls.addClassCleanup(cls.renderer_patch.stop)
         cls.preview_patch = patch.object(content, 'render_static_preview', return_value=None)
         cls.preview_patch.start()
         cls.addClassCleanup(cls.preview_patch.stop)

@@ -274,3 +274,27 @@ def enrich(url: str) -> dict:
             "threat_intel": [f.result() for f in f_ti],
         }
     return out
+
+
+def merge_threat_results(groups: list[tuple[str, list[dict]]]) -> list[dict]:
+    """One provider row, retaining URL-specific evidence and any source threat hit.
+
+    Missing coverage cannot become 'clean' just because another URL was clean.
+    """
+    providers = {}
+    priority = {"listed": 4, "unavailable": 3, "clean": 2, "skipped": 1}
+    for url, rows in groups:
+        for row in rows:
+            source = row.get("source", "Unknown provider")
+            checks = providers.setdefault(source, [])
+            for check in row.get("checks") or [{"url": url, "status": row.get("status", "unavailable"), "detail": row.get("detail", "")}]:
+                if check not in checks:
+                    checks.append(dict(check))
+    output = []
+    for source, checks in providers.items():
+        strongest = max(checks, key=lambda c: priority.get(c["status"], 3))
+        details = list(dict.fromkeys(c.get("detail", "") for c in checks))
+        output.append({"source": source, "status": strongest["status"],
+                       "detail": details[0] if len(details) == 1 else f"{len(checks)} URL checks; see per-address results",
+                       "checks": checks})
+    return output

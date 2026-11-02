@@ -52,3 +52,11 @@ Training now produces only the deployed host model. The archived full-model file
 The fetcher first requests the submitted address. After a timeout, connection failure or DNS failure, it can try HTTPS on the same host, then the HTTPS apex/www alternative for a bare domain or its `www` alias. It preserves paths and queries and does not add `www` to functional subdomains such as `portal.example.com`. It never downgrades HTTPS to HTTP and does not try aliases after a private-address block or certificate failure. A successfully returned HTTP error page is retained rather than replaced with another host's response.
 
 The URL context records the actual request attempts. An alternate response is labelled address recovery, not a redirect from the failed original URL. Threat hits and hostname signals from the submitted URL are preserved. Only an inspected, lower-risk, same-domain HTTPS result with verified TLS can be offered to the extension as a recovered navigation address. See [TEST_URLS.md](TEST_URLS.md) for ten manual test URLs.
+
+## Inspection path and rendering readiness
+
+The website and extension show an ordered URL inspection path, including the entered URL, failed attempts, disclosed HTTPS/host recovery, observed HTTP redirect hops and status codes, browser/client navigation, and the final inspected address. When intermediate steps are unknown, the final address is labelled as an observation rather than an inferred redirect.
+
+Threat intelligence has one summary row per provider. Expand its checked addresses to see results for the submitted and final URLs. Any listed address keeps the provider listed; an unavailable lookup is never hidden by a clean lookup on a different address.
+
+Eligible HTML pages now receive browser rendering even when the initial HTML already contains text. Rendering waits for stable visible content and controls and for visible loading indicators to clear, within a bounded time. Visible images, backgrounds and fonts are allowed to load before capture. A rendering timeout or incomplete visual assets is explicitly labelled; external site failures and bot challenges can still prevent complete capture. The DOM capture and URL path are sampled together, so later background navigation cannot change an already captured path.
