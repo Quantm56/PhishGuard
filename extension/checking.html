@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhishGuard - Pre-Visit Website Check</title>
+  <link rel="stylesheet" href="checking.css">
+</head>
+<body>
+  <div class="screen-wrapper">
+    <div class="modal-card">
+      <!-- Top Brand Header -->
+      <header class="card-header">
+        <div class="brand">
+          <img src="icons/icon48.png" alt="PhishGuard Shield" class="brand-icon">
+          <div>
+            <h1 class="brand-name">PhishGuard Security</h1>
+            <p class="brand-subtitle">Pre-Navigation Phishing Verification</p>
+          </div>
+        </div>
+        <div class="status-chip" id="statusChip">Pre-Flight Check</div>
+      </header>
+
+      <!-- URL Preview Card -->
+      <div class="destination-card">
+        <div class="destination-label">Target Destination</div>
+        <div id="targetUrlDisplay" class="destination-url">Parsing requested URL...</div>
+      </div>
+
+      <!-- State 1: Checking In Progress -->
+      <div id="viewChecking" class="view-state">
+        <div class="spinner-large"></div>
+        <h2 class="view-title">Checking this website...</h2>
+        <p class="view-desc">
+          Evaluating host lexical features, brand impersonation signals, and threat intelligence before your browser establishes a connection.
+        </p>
+        <div class="info-callout">
+          <strong>Pre-visit Protection:</strong> Navigation is paused in this tab. The destination website has not yet loaded in your browser.
+        </div>
+        <div class="server-note">
+          Server-side Note: If live analysis is active, the local PhishGuard engine performs an SSRF-guarded fetch from Python to inspect headers and DNS without exposing your browser.
+        </div>
+      </div>
+
+      <!-- State 2: Verified Legitimate (Redirecting) -->
+      <div id="viewPassing" class="view-state hide">
+        <div class="status-symbol pass-symbol">&#10004;</div>
+        <h2 class="view-title text-safe">Website Verified as Legitimate</h2>
+        <p class="view-desc">No strong phishing indicators were detected. Continuing to your destination...</p>
+        <div class="progress-bar-indeterminate"></div>
+      </div>
+
+      <!-- State 3: Phishing / Suspicious Warning -->
+      <div id="viewWarning" class="view-state hide">
+        <div class="warning-banner" id="warningBanner">
+          <span class="warning-symbol">&#9888;</span>
+          <span id="warningBannerText">Warning: Potential Phishing Threat Detected</span>
+        </div>
+
+        <div class="verdict-summary-card">
+          <div class="verdict-header">
+            <span id="warningBadge" class="verdict-badge">RISK</span>
+            <div class="score-display">
+              <span class="score-caption">Risk Score</span>
+              <span id="warningScore" class="score-num">0.0%</span>
+            </div>
+          </div>
+          <div class="score-track">
+            <div id="warningScoreFill" class="score-fill"></div>
+            <span class="score-tick tick-suspicious" title="Suspicious threshold (40%)"></span>
+            <span class="score-tick tick-phish" title="Phishing threshold (70%)"></span>
+          </div>
+        </div>
+
+        <div class="assessment-box">
+          <div class="box-label">Primary Finding</div>
+          <p id="warningSummaryReason" class="plain-reason-text">Exceeded phishing probability threshold.</p>
+        </div>
+
+        <div class="reasons-container" id="warningReasonsContainer">
+          <div class="box-label">Identified Risk Factors</div>
+          <ul id="warningReasonsList" class="reasons-list">
+            <!-- Rendered purely via document.createElement and textContent -->
+          </ul>
+        </div>
+
+        <div class="action-buttons-group">
+          <button id="btnWarningBack" class="btn btn-primary" type="button">
+            &#8592; Go back to safety (Recommended)
+          </button>
+          <button id="btnWarningProceedPrompt" class="btn btn-danger-outline" type="button">
+            Proceed anyway (Unsafe)
+          </button>
+        </div>
+
+        <!-- Confirmation prompt for Proceed Anyway -->
+        <div id="confirmProceedPanel" class="confirm-panel hide">
+          <p class="confirm-text">
+            <strong>Are you sure you want to proceed?</strong> This website may attempt to steal passwords, financial details, or personal data.
+          </p>
+          <div class="confirm-buttons">
+            <button id="btnConfirmProceed" class="btn btn-danger" type="button">Yes, proceed to website</button>
+            <button id="btnCancelProceed" class="btn btn-secondary" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- State 4: API Offline / Timeout Error -->
+      <div id="viewError" class="view-state hide">
+        <div class="error-banner">
+          <span class="warning-symbol">&#9888;</span>
+          <span>Unable to verify this site</span>
+        </div>
+        <h2 class="view-title">PhishGuard Scanner Unavailable</h2>
+        <p class="view-desc" id="errorDescription">
+          Could not connect to the local PhishGuard API at http://127.0.0.1:5000 (server stopped or request timed out). PhishGuard cannot verify whether this page is safe.
+        </p>
+        <div class="info-callout callout-warning">
+          <strong>Security Advisory:</strong> We do not silently label unverified websites as safe. Choose how you would like to proceed.
+        </div>
+
+        <div class="action-buttons-group">
+          <button id="btnErrorBack" class="btn btn-primary" type="button">
+            &#8592; Go back to safety (Recommended)
+          </button>
+          <button id="btnErrorRetry" class="btn btn-secondary" type="button">
+            Retry verification
+          </button>
+          <button id="btnErrorProceedPrompt" class="btn btn-ghost" type="button">
+            Proceed without verification
+          </button>
+        </div>
+
+        <!-- Confirmation for Proceed without verification -->
+        <div id="confirmErrorProceedPanel" class="confirm-panel hide">
+          <p class="confirm-text">
+            You are bypassing security verification. This page has not been evaluated for threats.
+          </p>
+          <div class="confirm-buttons">
+            <button id="btnConfirmErrorProceed" class="btn btn-danger" type="button">I understand, proceed anyway</button>
+            <button id="btnCancelErrorProceed" class="btn btn-secondary" type="button">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer Info -->
+      <footer class="card-footer">
+        <span class="footer-meta" id="footerMeta">Local API: http://127.0.0.1:5000 &middot; PhishGuard ML</span>
+      </footer>
+    </div>
+  </div>
+
+  <script type="module" src="checking.js"></script>
+</body>
+</html>
+

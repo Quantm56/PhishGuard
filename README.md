@@ -19,6 +19,7 @@ Rather than treating phishing detection as a naive string-classification task, P
 - [Model Evaluation & Benchmarks](#-model-evaluation--benchmarks)
 - [Project Directory Structure](#-project-directory-structure)
 - [Quick Start](#-quick-start)
+- [Chrome Browser Extension](#-chrome-browser-extension)
 - [REST API Reference](#-rest-api-reference)
 - [Web Dashboard Preview](#-web-dashboard-preview)
 - [Threat Intelligence & Environment Variables](#-threat-intelligence--environment-variables)
@@ -216,6 +217,160 @@ PhishGuard/
    python api.py
    ```
    Open your browser at `http://127.0.0.1:5000` to interact with the dashboard!
+
+---
+
+## 🧩 Chrome Browser Extension (Pre-Visit Checking Flow)
+
+PhishGuard includes a Manifest V3 Google Chrome extension located in the `extension/` directory. Rather than inspecting pages after they load, this version implements a **synchronous pre-visit interception flow**:
+
+```
+[User clicks link / enters URL]
+               │
+               ▼
+   [Chrome DNR Interception] (Priority 1: regexFilter: ^https?://.+)
+               │
+               ▼
+[Redirects to extension checking.html?url=...] (Browser socket held)
+               │
+               ▼
+     [POST /api/predict] ─── (Local Python server at 127.0.0.1:5000)
+               │
+      ┌────────┴───────────────────────────┬────────────────────────────────┐
+      ▼                                    ▼                                ▼
+ [LEGITIMATE]                    [SUSPICIOUS / PHISHING]             [API OFFLINE / ERROR]
+ (score < 40%)                     (score >= 40%)                     (timeout / 500 / net down)
+      │                                    │                                │
+      ▼                                    ▼                                ▼
+Add session allow rule            Display Warning Screen            Display Verification Error
+(tabId, cleanUrl, priority 2)     (RISK / CHECK badges, score,      (Never auto-clears safe)
+      │                           reasons, signals)                 Choices:
+      ▼                                    │                        - Go back (Recommended)
+Navigate to original URL          Choices:                          - Retry verification
+      │                           - Go back (Recommended)           - Proceed at own risk
+      ▼                           - Proceed anyway (Confirmation)
+Page loads safely                          │
+      │                                    ▼
+Navigation complete:              Add session allow rule & proceed
+Auto-remove allow rule                     │
+(Repeat visits re-checked!)                ▼
+                                  Auto-remove allow rule on load
+```
+
+### 1. Why `tabs.onUpdated` Cannot Prevent Page Loading
+
+In Manifest V3, `chrome.tabs.onUpdated` is an **asynchronous notification event**, not an interceptor. By the time `onUpdated` fires:
+- Chrome's network stack has already resolved DNS, negotiated TLS, and sent the HTTP request.
+- The destination server may have already transmitted HTTP headers, Set-Cookie directives, tracking pixels, or exploit payloads.
+- Redirecting inside `onUpdated` via `chrome.tabs.update()` is inherently prone to race conditions where the destination webpage executes scripts or partially renders before the tab is redirected.
+- Ordinary Manifest V3 `chrome.webRequest` listeners are non-blocking and cannot pause network requests while an asynchronous API call completes.
+
+To guarantee true pre-visit protection without enterprise policies or deprecated Manifest V2 APIs, PhishGuard utilizes **Declarative Net Request (DNR)** rules to redirect `main_frame` navigations synchronously before any destination network connection is established.
+
+### 2. Declarative Net Request Rules & Navigation Loop Prevention
+
+To prevent infinite redirection loops while ensuring thorough security, PhishGuard employs a tiered priority rule system:
+
+1. **Rule 1 & 2 (Priority 3 - Allow Localhost & API)**:
+   - Direct visits to `http://127.0.0.1:5000` (the PhishGuard dashboard) or `http://localhost` are explicitly allowed and never redirected.
+2. **Rule 10 (Priority 1 - Intercept Main Frame)**:
+   - All other top-level HTTP/HTTPS navigations are intercepted and rewritten to `chrome-extension://<id>/checking.html?url=\0`.
+3. **Session-Scoped Allow Rules (Priority 2 - Scoped Pass-Through)**:
+   - When a URL receives a `LEGITIMATE` verdict (or when the user explicitly confirms "Proceed anyway"), the background worker dynamically registers a temporary session rule:
+     - Priority: `2` (higher than Rule 10's redirect, lower than Rule 1's local allow).
+     - Scoped strictly to that specific `tabId` and exact `cleanUrl` (`condition.tabIds: [tabId]`, `condition.urlFilter: |<cleanUrl>`).
+     - Resource type restricted to `main_frame`.
+   - The checking page then executes `window.location.replace(targetUrl)`.
+   - Chrome matches the priority 2 allow rule and allows the page through.
+   - **Automatic Rule Revocation**: As soon as the tab finishes loading (`chrome.tabs.onUpdated` with `status: 'complete'`) or after a 15-second TTL safety backstop, the temporary session rule is revoked.
+   - **Repeat Visit Protection**: Navigating back to or reloading that URL subsequently triggers a fresh pre-visit check.
+   - **Redirect Chain Protection**: If domain A redirects (HTTP 301/302) to domain B, domain B is evaluated as a new navigation and redirected to `checking.html?url=B`.
+
+### 3. Server-Side Scan vs Browser Navigation
+
+> **Important Security Architecture Note**:
+> When `LIVE_CHECKS` is enabled (`live: true`), the local PhishGuard server (running in Python) performs an SSRF-guarded static fetch and OSINT queries (RDAP, DNS, TLS) to inspect the website. 
+> The **user's web browser** remains on the internal extension page and has **not** connected to the destination server, submitted cookies, executed JavaScript, or loaded remote DOM assets.
+
+### 4. Permissions Explained
+
+- `declarativeNetRequest`: Used to declare dynamic redirect rules for top-level `main_frame` navigations and session-scoped temporary allow rules.
+- `tabs`: Enables the extension to read `tab.url`, track navigation completion, and clean up temporary rules when tabs close or navigate away.
+- `storage`: Enables `chrome.storage.session` for transient in-memory per-tab status and caching without logging permanent browsing history.
+- `host_permissions` (`*://*/*`, `http://127.0.0.1:5000/*`, `http://localhost:5000/*`): Required by Chrome Declarative Net Request to match and redirect external HTTP/HTTPS requests to `checking.html`, and to query the local Flask API.
+
+### 5. Starting the PhishGuard API (Windows PowerShell)
+
+Ensure the local API server is running before testing the extension:
+
+```powershell
+# Step 1: Open Windows PowerShell and navigate to the project directory
+cd "c:\Users\Chinmay Vyas\OneDrive\Desktop\BTECH SEM 5\ISL API Extension\PhishGuard"
+
+# Step 2: Activate the virtual environment
+.\.venv\Scripts\Activate.ps1
+
+# Step 3: Launch the API server
+python api.py
+```
+
+The API starts on `http://127.0.0.1:5000` with CORS preflight and headers enabled for extension communication.
+
+### 6. Loading the Extension in Google Chrome
+
+1. Open Google Chrome and navigate to:
+   ```
+   chrome://extensions
+   ```
+2. In the top-right corner, toggle on **Developer mode**.
+3. In the top-left toolbar, click **Load unpacked**.
+4. In the folder picker dialog, select the `extension/` directory:
+   ```
+   c:\Users\Chinmay Vyas\OneDrive\Desktop\BTECH SEM 5\ISL API Extension\PhishGuard\extension
+   ```
+5. Click **Select Folder**. The **PhishGuard Pre-Visit URL Scanner** extension will appear in your installed extensions list.
+6. Pin the extension to your Chrome toolbar.
+
+### 7. Pre-Visit Flow & UI Experience
+
+| Outcome | Screen Shown | Badge | Behavior |
+|---|---|---|---|
+| **Checking** | `checking.html` (Spinner + Target URL) | `...` | Navigation paused. Inspecting features via local API. |
+| **Legitimate** | Green Confirmation &rarr; Auto-forward | `SAFE` | Verified clean (score < 40%). Continues automatically. |
+| **Suspicious** | Warning Screen (Amber Banner) | `CHECK` | Score 40%–69%. Shows signals. Offers "Go back" & "Proceed anyway". |
+| **Phishing** | Warning Screen (Red Banner) | `RISK` | Score &ge; 70%. Shows risk breakdown. Offers "Go back" & "Proceed anyway". |
+| **API Offline** | Error Screen ("Unable to verify") | `?` | Server stopped or timeout. Never auto-clears. Explicit user choice. |
+
+### 8. Reproducible Manual Test Checklist (Using Controlled Test Pages)
+
+Follow these steps to demonstrate every flow safely in Google Chrome:
+
+1. **Legitimate URL Auto-Forward Test**:
+   - In Chrome's address bar, type or navigate to: `https://github.com/pallets/flask`
+   - Observe immediate redirection to the PhishGuard "Checking this website..." page.
+   - Within 1–2 seconds, observe the green checkmark ("Website Verified as Legitimate") and automatic forwarding to GitHub.
+   - Check the extension badge: shows green **`SAFE`**.
+2. **Suspicious / Phishing Warning Screen Test**:
+   - In the address bar, type: `http://secure-login-update-paypal.com` or `http://verify-account-bank-login.xyz`
+   - Observe immediate interception to the PhishGuard checking page.
+   - Observe the page halt on the Warning Screen with a red/amber banner, **`RISK`** or **`CHECK`** badge, risk percentage, and plain-text signals (e.g. *brand name in sld combo*).
+   - Click **"Go back to safety (Recommended)"**: verify it navigates back or closes the tab.
+3. **"Proceed Anyway" Override Test**:
+   - Re-visit `http://secure-login-update-paypal.com`.
+   - On the warning screen, click **"Proceed anyway (Unsafe)"**.
+   - Observe the confirmation prompt ("Are you sure you want to proceed?"). Click **"Yes, proceed to website"**.
+   - Verify that the temporary allow rule admits navigation without looping back to `checking.html`.
+4. **Repeat Visit Re-Verification Test**:
+   - After proceeding to the test URL in step 3, refresh the page or open the same URL in a new tab.
+   - Verify that the temporary session rule was already revoked and the checking screen appears again (no persistent bypass).
+5. **API Offline / Timeout Error Test**:
+   - In your PowerShell terminal, stop the Flask API server using `Ctrl+C`.
+   - In Chrome, navigate to `https://en.wikipedia.org/wiki/Computer_security`.
+   - Observe the checking page display **"Unable to verify this site"** with clear explanation that the scanner at `127.0.0.1:5000` is offline.
+   - Verify that it does **not** assume safe. Test **"Retry verification"** after restarting `python api.py`.
+6. **Local API Dashboard Exemption Test**:
+   - Navigate to `http://127.0.0.1:5000/`.
+   - Verify that the PhishGuard web dashboard opens immediately without being redirected to `checking.html`.
 
 ---
 
