@@ -77,9 +77,10 @@ class EvidenceTests(unittest.TestCase):
     def test_health_reports_presence_without_exposing_keys(self):
         import os
         import api
-        with patch.dict(os.environ, {"GSB_API_KEY": "private-test-key"}):
+        with patch.dict(os.environ, {"PHISHTANK_APP_KEY": "private-test-key"}):
             response = api.app.test_client().get('/api/health')
-        self.assertTrue(response.json['integrations']['GSB_API_KEY'])
+        self.assertEqual(set(response.json['integrations']), {'PHISHTANK_APP_KEY'})
+        self.assertTrue(response.json['integrations']['PHISHTANK_APP_KEY'])
         self.assertNotIn('private-test-key', response.text)
 
     def test_redirect_does_not_inherit_destination_domain_age(self):

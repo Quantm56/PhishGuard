@@ -5,9 +5,6 @@ Design rules
     and is NEVER treated as "clean".
   * No API key is required for: RDAP, DNS, TLS, OpenPhish feed. Optional keys (environment variables):
         PHISHTANK_APP_KEY   PhishTank "checkurl" API (registration is often closed - the key is optional)
-        URLHAUS_AUTH_KEY    abuse.ch URLhaus (free key from https://auth.abuse.ch/)
-        GSB_API_KEY         Google Safe Browsing v4 (free key from Google Cloud console)
-        VT_API_KEY          VirusTotal v3 (free key, 4 requests/min)
   * These signals describe the *current* state of a domain, so they are applied as explicit, documented
     risk adjustments (see predictor.py) rather than learned features: PhiUSIIL has no registration dates.
 """
@@ -201,68 +198,14 @@ def check_phishtank(url: str) -> dict:
         return {"source": "PhishTank", "status": "unavailable", "detail": str(e)[:100]}
 
 
-def check_urlhaus(url: str) -> dict:
-    key = os.getenv("URLHAUS_AUTH_KEY")
-    if not key:
-        return {"source": "URLhaus", "status": "skipped", "detail": "set URLHAUS_AUTH_KEY to enable"}
-    try:
-        r = requests.post("https://urlhaus-api.abuse.ch/v1/url/", data={"url": url}, timeout=TIMEOUT,
-                          headers={"Auth-Key": key, **HEADERS})
-        r.raise_for_status()
-        j = r.json()
-        if j.get("query_status") == "ok":
-            return {"source": "URLhaus", "status": "listed", "detail": f"URLhaus: {j.get('threat', 'malware')} ({j.get('url_status')})"}
-        return {"source": "URLhaus", "status": "clean", "detail": "not in URLhaus"}
-    except Exception as e:  # noqa: BLE001
-        return {"source": "URLhaus", "status": "unavailable", "detail": str(e)[:100]}
-
-
-def check_gsb(url: str) -> dict:
-    key = os.getenv("GSB_API_KEY")
-    if not key:
-        return {"source": "Google Safe Browsing", "status": "skipped", "detail": "set GSB_API_KEY to enable"}
-    try:
-        body = {"client": {"clientId": "phishguard", "clientVersion": "1.0"},
-                "threatInfo": {"threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
-                               "platformTypes": ["ANY_PLATFORM"], "threatEntryTypes": ["URL"],
-                               "threatEntries": [{"url": url}]}}
-        r = requests.post(f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={key}", json=body, timeout=TIMEOUT)
-        r.raise_for_status()
-        m = r.json().get("matches")
-        if m:
-            return {"source": "Google Safe Browsing", "status": "listed", "detail": m[0].get("threatType", "threat")}
-        return {"source": "Google Safe Browsing", "status": "clean", "detail": "no match"}
-    except Exception as e:  # noqa: BLE001
-        return {"source": "Google Safe Browsing", "status": "unavailable", "detail": "Lookup failed; check API key, permissions, quota and connectivity."}
-
-
-def check_virustotal(url: str) -> dict:
-    key = os.getenv("VT_API_KEY")
-    if not key:
-        return {"source": "VirusTotal", "status": "skipped", "detail": "set VT_API_KEY to enable"}
-    try:
-        uid = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
-        r = requests.get(f"https://www.virustotal.com/api/v3/urls/{uid}", headers={"x-apikey": key}, timeout=TIMEOUT)
-        if r.status_code == 404:
-            return {"source": "VirusTotal", "status": "unavailable", "detail": "URL never scanned by VirusTotal"}
-        r.raise_for_status()
-        st = r.json()["data"]["attributes"]["last_analysis_stats"]
-        bad = st.get("malicious", 0) + st.get("phishing", 0)
-        if bad >= 2:
-            return {"source": "VirusTotal", "status": "listed", "detail": f"{bad} engines flag it (malicious/phishing)"}
-        return {"source": "VirusTotal", "status": "clean", "detail": f"{bad} engines flag it"}
-    except Exception as e:  # noqa: BLE001
-        return {"source": "VirusTotal", "status": "unavailable", "detail": str(e)[:100]}
-
-
-THREAT_FEEDS = [check_openphish, check_phishtank, check_urlhaus, check_gsb, check_virustotal]
+THREAT_FEEDS = [check_openphish, check_phishtank]
 
 
 # ----------------------------------------------------------------------------- orchestrator
 def enrich(url: str) -> dict:
     """Run all lookups in parallel. Returns {'whois':…, 'dns':…, 'tls':…, 'threat_intel':[…]}."""
     sp, host = parse(url)
-    with cf.ThreadPoolExecutor(max_workers=8) as ex:
+    with cf.ThreadPoolExecutor(max_workers=5) as ex:
         f_age = ex.submit(domain_age, host)
         f_dns = ex.submit(dns_info, host)
         f_tls = ex.submit(tls_info, host, sp.port or 443) if sp.scheme == "https" else None
