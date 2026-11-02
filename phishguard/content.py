@@ -222,9 +222,9 @@ def render_with_playwright(url: str, timeout: float = 6.0) -> dict:
 
             try:
                 resp = page.goto(url, wait_until="domcontentloaded")
-                # Wait briefly for dynamic DOM hydration
+                # Short, bounded delay for dynamic DOM hydration (e.g. mounting root components)
                 try:
-                    page.wait_for_load_state("networkidle", timeout=1500)
+                    page.wait_for_timeout(300)
                 except Exception:
                     pass
 

@@ -156,6 +156,30 @@ class TestContentFeatures(unittest.TestCase):
         res_ok = check_title_brand_mismatch("PayPal - Sign In", "paypal.com")
         self.assertFalse(res_ok["mismatch"])
 
+    def test_playwright_render_bounded_hydration(self):
+        """Regression test: verify Playwright uses bounded hydration delay without networkidle stall."""
+        with mock.patch("phishguard.content.assert_public_host"), \
+             mock.patch("playwright.sync_api.sync_playwright") as mock_pw:
+            mock_ctx_mgr = mock.MagicMock()
+            mock_pw.return_value = mock_ctx_mgr
+            mock_p = mock_ctx_mgr.__enter__.return_value
+            mock_browser = mock.MagicMock()
+            mock_p.chromium.launch.return_value = mock_browser
+            mock_context = mock.MagicMock()
+            mock_browser.new_context.return_value = mock_context
+            mock_page = mock.MagicMock()
+            mock_context.new_page.return_value = mock_page
+            mock_page.content.return_value = "<html><body><div id='root'>App Loaded</div></body></html>"
+            mock_page.url = "https://spa.example.com/"
+
+            res = content.render_with_playwright("https://spa.example.com/", timeout=4.0)
+
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["inspection_method"], "playwright_rendered")
+            mock_page.goto.assert_called_once_with("https://spa.example.com/", wait_until="domcontentloaded")
+            mock_page.wait_for_timeout.assert_called_once_with(300)
+            mock_page.wait_for_load_state.assert_not_called()
+
 
 class TestLegitimateRegressionSuite(unittest.TestCase):
     """Verifies that legitimate websites across diverse architectures are NOT flagged as phishing."""

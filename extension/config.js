@@ -15,7 +15,7 @@ export const CONFIG = {
   },
 
   // Request timeout in milliseconds for pre-visit checking (bounded at 6s for responsive browsing)
-  CHECK_TIMEOUT_MS: 6000,
+  CHECK_TIMEOUT_MS: 8000,
 
   // Temporary allow rule expiration in milliseconds (15s allows the navigation to complete smoothly)
   ALLOW_RULE_TTL_MS: 15000,
